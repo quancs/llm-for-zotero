@@ -7,6 +7,7 @@ import {
 import {
   createNoteFromAssistantText,
   createStandaloneNoteFromAssistantText,
+  noteHtmlToMarkdownText,
   normalizeNoteSourceText,
   readNoteSnapshot,
   renderRawNoteHtml,
@@ -1635,8 +1636,8 @@ export class ZoteroGateway {
     }
     if (
       typeof params.expectedOriginalHtml === "string" &&
-      normalizeText(snapshot.text) !==
-        normalizeText(stripNoteHtml(params.expectedOriginalHtml))
+      normalizeText(noteHtmlToMarkdownText(snapshot.html)) !==
+        normalizeText(noteHtmlToMarkdownText(params.expectedOriginalHtml))
     ) {
       throw new Error(
         "The active note changed before this edit was applied. Refresh and try again.",
