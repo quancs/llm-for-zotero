@@ -1,12 +1,14 @@
 import { assert } from "chai";
 import {
   getCodexAppServerApprovalsReviewerPref,
+  getCodexAppServerProxyUrlPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexZoteroMcpToolsEnabled,
   isCodexAppServerNativeApprovalsEnabled,
   isNativeZoteroMcpToolsEnabled,
   setCodexAppServerApprovalsReviewerPref,
+  setCodexAppServerProxyUrlPref,
   setCodexAppServerNativeApprovalsEnabled,
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
@@ -39,6 +41,27 @@ describe("codexAppServer prefs", function () {
       } else {
         delete globalScope.Zotero;
       }
+    }
+  });
+
+  it("persists the Codex app-server proxy URL", function () {
+    const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+    const originalZotero = globalScope.Zotero;
+    const prefs = new Map<string, unknown>();
+    try {
+      globalScope.Zotero = {
+        Prefs: {
+          get: (key: string) => prefs.get(key),
+          set: (key: string, value: unknown) => prefs.set(key, value),
+        },
+      };
+
+      setCodexAppServerProxyUrlPref("  http://127.0.0.1:7897  ");
+
+      assert.equal(getCodexAppServerProxyUrlPref(), "http://127.0.0.1:7897");
+    } finally {
+      if (originalZotero) globalScope.Zotero = originalZotero;
+      else delete globalScope.Zotero;
     }
   });
 

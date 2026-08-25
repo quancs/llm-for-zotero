@@ -205,6 +205,7 @@ import {
 } from "../claudeCode/modelCatalog";
 import {
   getCodexAppServerApprovalsReviewerPref,
+  getCodexAppServerProxyUrlPref,
   getCodexBinaryPathPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
@@ -212,6 +213,7 @@ import {
   isCodexAppServerModeEnabled,
   isNativeZoteroMcpToolsEnabled,
   setCodexAppServerApprovalsReviewerPref,
+  setCodexAppServerProxyUrlPref,
   setCodexAppServerNativeApprovalsEnabled,
   setCodexBinaryPathPref,
   setNativeZoteroMcpToolsEnabled,
@@ -1103,6 +1105,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLSelectElement | null;
   const codexAppServerPathInput = doc.querySelector(
     `#${config.addonRef}-codex-app-server-path`,
+  ) as HTMLInputElement | null;
+  const codexAppServerProxyUrlInput = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-proxy-url`,
   ) as HTMLInputElement | null;
   const codexAppServerPathHelper = doc.querySelector(
     `#${config.addonRef}-codex-app-server-path-helper`,
@@ -2990,6 +2995,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   if (codexAppServerPathHelper) {
     codexAppServerPathHelper.textContent = t(getCodexAppServerPathHelperText());
+  }
+
+  if (codexAppServerProxyUrlInput) {
+    codexAppServerProxyUrlInput.value = getCodexAppServerProxyUrlPref();
+    const commitCodexProxyUrl = () => {
+      setCodexAppServerProxyUrlPref(codexAppServerProxyUrlInput.value);
+      codexAppServerProxyUrlInput.value = getCodexAppServerProxyUrlPref();
+    };
+    codexAppServerProxyUrlInput.addEventListener("change", commitCodexProxyUrl);
+    codexAppServerProxyUrlInput.addEventListener("blur", commitCodexProxyUrl);
+    codexAppServerProxyUrlInput.addEventListener("input", () => {
+      setCodexAppServerProxyUrlPref(codexAppServerProxyUrlInput.value);
+    });
   }
 
   if (codexAppServerTestBtn && codexAppServerStatus) {

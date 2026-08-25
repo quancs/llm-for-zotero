@@ -33,6 +33,7 @@ pref("enableCodexAppServerMode", false);
 pref("codexAppServerModel", "gpt-5.4");
 pref("codexAppServerReasoning", "auto");
 pref("codexAppServerPath", "");
+pref("codexAppServerProxyUrl", "");
 pref("codexAppServerConversationModeMap", "");
 pref("codexAppServerZoteroMcpToolsEnabled", true);
 pref("codexAppServerNativeApprovalsEnabled", false);

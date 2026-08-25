@@ -1028,6 +1028,60 @@
                   </html:div>
                 </html:details>
 
+                <html:details style="display: block; margin-top: 2px">
+                  <html:summary
+                    style="
+                      font-size: 12px;
+                      font-weight: 600;
+                      color: var(--fill-primary, inherit);
+                      cursor: pointer;
+                      user-select: none;
+                    "
+                  >
+                    Codex App Server Proxy (optional)
+                  </html:summary>
+                  <html:div
+                    style="
+                      display: flex;
+                      flex-direction: column;
+                      gap: 6px;
+                      margin-top: 8px;
+                    "
+                  >
+                    <html:input
+                      id="__addonRef__-codex-app-server-proxy-url"
+                      type="text"
+                      placeholder="For example: http://127.0.0.1:7897"
+                      style="
+                        width: 100%;
+                        max-width: none;
+                        height: 28px;
+                        margin: 0;
+                        padding: 4px 8px;
+                        font-size: 12px;
+                        line-height: 18px;
+                        border: 1px solid var(--stroke-secondary, #c8c8c8);
+                        border-radius: 6px;
+                        background: Field;
+                        color: FieldText;
+                        box-sizing: border-box;
+                      "
+                    />
+                    <html:span
+                      style="
+                        font-size: 11px;
+                        color: var(--fill-secondary, #777);
+                        line-height: 1.45;
+                        display: block;
+                      "
+                    >
+                      Injects HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY only into
+                      the Codex App Server process. Local Zotero and MCP
+                      endpoints remain direct.
+                    </html:span>
+                  </html:div>
+                </html:details>
+
                 <html:div
                   style="
                     display: flex;

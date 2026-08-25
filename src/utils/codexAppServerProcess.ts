@@ -10,6 +10,7 @@ import type {
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
+import { getCodexAppServerProxyUrlPref } from "../codexAppServer/prefs";
 import {
   LocalDocumentPathStreamRedactor,
   redactAllRememberedLocalDocumentPathsFromTerminalText,
@@ -21,6 +22,7 @@ const DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
 const CODEX_APP_SERVER_STDERR_TAIL_WAIT_MS = 100;
 const CODEX_APP_SERVER_DIAGNOSTIC_BUFFER_MAX = 4000;
 const CODEX_APP_SERVER_DIAGNOSTIC_BUFFER_TRIM_THRESHOLD = 8000;
+const CODEX_APP_SERVER_PROXY_NO_PROXY = "localhost,127.0.0.1,::1";
 const CODEX_ENV_KEYS = [
   "CODEX_PATH",
   "HOME",
@@ -92,6 +94,7 @@ export type CodexAppServerInjectItemsSupport =
 
 export type CodexAppServerProcessOptions = {
   codexPath?: string;
+  proxyUrl?: string;
 };
 
 type CodexLaunchInvocation = {
@@ -99,6 +102,53 @@ type CodexLaunchInvocation = {
   args: string[];
   environment?: Record<string, string>;
 };
+
+export function normalizeCodexAppServerProxyUrl(proxyUrl: string): string {
+  const trimmed = String(proxyUrl || "").trim();
+  if (!trimmed) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Invalid Codex App Server proxy URL");
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    !parsed.hostname
+  ) {
+    throw new Error("Codex App Server proxy URL must use http:// or https://");
+  }
+  return parsed.href.replace(/\/$/, "");
+}
+
+export function buildCodexAppServerProxyEnvironment(
+  environment: Record<string, string> | undefined,
+  proxyUrl: string,
+): Record<string, string> | undefined {
+  const normalizedProxyUrl = normalizeCodexAppServerProxyUrl(proxyUrl);
+  if (!normalizedProxyUrl) return environment;
+  return {
+    ...(environment || {}),
+    HTTP_PROXY: normalizedProxyUrl,
+    HTTPS_PROXY: normalizedProxyUrl,
+    ALL_PROXY: normalizedProxyUrl,
+    http_proxy: normalizedProxyUrl,
+    https_proxy: normalizedProxyUrl,
+    all_proxy: normalizedProxyUrl,
+    NO_PROXY: CODEX_APP_SERVER_PROXY_NO_PROXY,
+    no_proxy: CODEX_APP_SERVER_PROXY_NO_PROXY,
+  };
+}
+
+function getEffectiveCodexAppServerProxyUrl(
+  options: CodexAppServerProcessOptions,
+): string {
+  return normalizeCodexAppServerProxyUrl(
+    options.proxyUrl === undefined
+      ? getCodexAppServerProxyUrlPref()
+      : options.proxyUrl,
+  );
+}
 
 function createAbortError(): Error {
   const err = new Error("Aborted");
@@ -200,6 +250,10 @@ export class CodexAppServerProcess {
       args = invocation.args;
       environment = invocation.environment;
     }
+    environment = buildCodexAppServerProxyEnvironment(
+      environment,
+      getEffectiveCodexAppServerProxyUrl(options),
+    );
     let proc: any;
     try {
       proc = await Subprocess.call({
@@ -2345,7 +2399,8 @@ function buildProcessCacheKey(
   options: CodexAppServerProcessOptions = {},
 ): string {
   const codexPath = resolveCodexAppServerBinaryPath(options.codexPath);
-  return codexPath ? `${cacheKey}\u0000${codexPath}` : cacheKey;
+  const proxyUrl = getEffectiveCodexAppServerProxyUrl(options);
+  return [cacheKey, codexPath, proxyUrl].join("\u0000");
 }
 
 export function destroyCachedCodexAppServerProcess(

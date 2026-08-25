@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   CodexAppServerProcess,
+  buildCodexAppServerProxyEnvironment,
   destroyCachedCodexAppServerProcess,
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
@@ -161,6 +162,48 @@ function createChunkReader(values: string[]) {
 }
 
 describe("codexAppServerProcess", function () {
+  it("injects a scoped proxy environment and replaces wildcard bypasses", function () {
+    assert.deepInclude(
+      buildCodexAppServerProxyEnvironment(
+        { PATH: "/usr/bin", NO_PROXY: "*", no_proxy: "*" },
+        "http://127.0.0.1:7897",
+      ),
+      {
+        PATH: "/usr/bin",
+        HTTP_PROXY: "http://127.0.0.1:7897",
+        HTTPS_PROXY: "http://127.0.0.1:7897",
+        ALL_PROXY: "http://127.0.0.1:7897",
+        http_proxy: "http://127.0.0.1:7897",
+        https_proxy: "http://127.0.0.1:7897",
+        all_proxy: "http://127.0.0.1:7897",
+        NO_PROXY: "localhost,127.0.0.1,::1",
+        no_proxy: "localhost,127.0.0.1,::1",
+      },
+    );
+  });
+
+  it("passes the configured proxy environment to the app-server subprocess", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    await withRuntimeStubs(
+      {
+        platform: "macos",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "/usr/local/bin/codex",
+          proxyUrl: "http://127.0.0.1:7897",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.environmentAppend, true);
+    assert.equal(calls[0]?.environment?.HTTPS_PROXY, "http://127.0.0.1:7897");
+    assert.equal(calls[0]?.environment?.NO_PROXY, "localhost,127.0.0.1,::1");
+  });
+
   it("extracts thread and turn IDs from both flat and nested response shapes", function () {
     assert.equal(
       extractCodexAppServerThreadId({ id: "thread-flat" }),

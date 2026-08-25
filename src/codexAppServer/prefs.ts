@@ -144,6 +144,14 @@ export function setCodexBinaryPathPref(path: string): void {
   setPref("codexAppServerPath", String(path || "").trim());
 }
 
+export function getCodexAppServerProxyUrlPref(): string {
+  return getStringPref("codexAppServerProxyUrl").trim();
+}
+
+export function setCodexAppServerProxyUrlPref(proxyUrl: string): void {
+  setPref("codexAppServerProxyUrl", String(proxyUrl || "").trim());
+}
+
 export function isCodexZoteroMcpToolsEnabled(): boolean {
   const value = getZoteroPrefs()?.get?.(
     prefKey("codexAppServerZoteroMcpToolsEnabled"),

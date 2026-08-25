@@ -682,6 +682,10 @@ const zhCN: Record<string, string> = {
   "Codex CLI Path (optional)": "Codex CLI 路径（可选）",
   "Optional absolute path to codex executable":
     "Codex 可执行文件的可选绝对路径",
+  "Codex App Server Proxy (optional)": "Codex App Server 代理（可选）",
+  "For example: http://127.0.0.1:7897": "例如：http://127.0.0.1:7897",
+  "Injects HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY only into the Codex App Server process. Local Zotero and MCP endpoints remain direct.":
+    "仅向 Codex App Server 进程注入 HTTP_PROXY、HTTPS_PROXY 和 ALL_PROXY；Zotero 与 MCP 的本地地址仍保持直连。",
   "Optional. Leave blank to auto-detect native Windows Codex. WSL Codex is not supported because Zotero MCP uses Windows-local loopback. Or enter a native path such as C:\\nvm4w\\nodejs\\codex.cmd or C:\\Users\\<user>\\AppData\\Roaming\\npm\\codex.cmd.":
     "可选。留空会自动检测原生 Windows Codex。由于 Zotero MCP 使用 Windows 本地回环地址，不支持 WSL Codex。也可以输入原生路径，例如 C:\\nvm4w\\nodejs\\codex.cmd 或 C:\\Users\\<user>\\AppData\\Roaming\\npm\\codex.cmd。",
   "Optional. Leave blank to auto-detect. Or enter an absolute path such as /opt/homebrew/bin/codex or /usr/local/bin/codex.":
