@@ -2693,16 +2693,38 @@ function syncInlineActionCardAttr(body: Element): void {
   }
 }
 
-function findNativeMcpActionCard(
+function findNativeMcpTraceActionCard(
   chatBox: HTMLElement,
   requestId: string,
 ): HTMLElement | null {
   const cards = Array.from(
-    chatBox.querySelectorAll(
-      ".llm-agent-hitl-card[data-request-id], .llm-action-inline-card[data-request-id]",
-    ),
+    chatBox.querySelectorAll(".llm-agent-hitl-card[data-request-id]"),
   ) as HTMLElement[];
-  return cards.find((card) => card.dataset.requestId === requestId) || null;
+  return (
+    cards.find(
+      (card) =>
+        card.dataset.requestId === requestId &&
+        !card.closest(".llm-action-inline-card"),
+    ) || null
+  );
+}
+
+export function scheduleCodexConfirmationCardFallback<T>(params: {
+  schedule: (callback: () => void, delayMs: number) => void;
+  isPending: () => boolean;
+  findTraceCard: () => T | null;
+  useTraceCard: (card: T) => void;
+  showInlineFallback: () => void;
+}): void {
+  params.schedule(() => {
+    if (!params.isPending()) return;
+    const traceCard = params.findTraceCard();
+    if (traceCard) {
+      params.useTraceCard(traceCard);
+      return;
+    }
+    params.showInlineFallback();
+  }, 90);
 }
 
 function scrollNativeMcpActionCardIntoView(
@@ -2729,20 +2751,20 @@ function closeNativeMcpActionCard(body: Element, requestId?: string): void {
   const ui = getPanelRequestUI(body);
   const chatBox = ui.chatBox;
   if (!chatBox) return;
-  let card: Element | null = null;
   if (requestId) {
-    card =
-      findNativeMcpActionCard(chatBox, requestId) ||
-      (
-        Array.from(
-          chatBox.querySelectorAll(".llm-action-inline-card"),
-        ) as HTMLElement[]
-      ).find((entry) => entry.dataset.requestId === requestId) ||
-      null;
+    const cards = Array.from(
+      chatBox.querySelectorAll(
+        ".llm-agent-hitl-card[data-request-id], .llm-action-inline-card[data-request-id]",
+      ),
+    ) as HTMLElement[];
+    for (const card of cards) {
+      if (card.dataset.requestId !== requestId) continue;
+      const inlineWrapper = card.closest(".llm-action-inline-card");
+      (inlineWrapper || card).remove();
+    }
   } else {
-    card = chatBox.querySelector(".llm-action-inline-card");
+    chatBox.querySelector(".llm-action-inline-card")?.remove();
   }
-  card?.remove();
   syncInlineActionCardAttr(body);
 }
 
@@ -2752,6 +2774,7 @@ function showNativeMcpActionCard(
   action: AgentPendingAction,
 ): Promise<AgentConfirmationResolution> {
   return new Promise((resolve) => {
+    let pending = true;
     ztoolkit.log("Codex app-server native confirmation requested", {
       requestId,
       toolName: action.toolName,
@@ -2769,9 +2792,11 @@ function showNativeMcpActionCard(
         "Zotero review card UI is unavailable for native confirmation.",
       );
     }
+    const chatBox = ui.chatBox;
 
     try {
       getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
+        pending = false;
         ztoolkit.log("Codex app-server native confirmation resolved", {
           requestId,
           approved: resolution.approved,
@@ -2792,33 +2817,65 @@ function showNativeMcpActionCard(
       );
     }
 
-    const renderedCard = findNativeMcpActionCard(ui.chatBox, requestId);
-    if (renderedCard) {
-      scrollNativeMcpActionCardIntoView(ui.chatBox, renderedCard);
-      syncInlineActionCardAttr(body);
-      ztoolkit.log("Codex app-server native confirmation rendered", {
-        requestId,
-        toolName: action.toolName,
-        mode: action.mode || "approval",
-        source: "trace",
-      });
-      return;
-    }
-    ui.chatBox.querySelector(".llm-action-inline-card")?.remove();
-    const wrapper = ownerDoc.createElement("div");
-    wrapper.className = "llm-action-inline-card llm-action-inline-card-review";
-    wrapper.dataset.requestId = requestId;
-    wrapper.appendChild(
-      renderPendingActionCard(ownerDoc, { requestId, action }),
-    );
-    ui.chatBox.appendChild(wrapper);
-    scrollNativeMcpActionCardIntoView(ui.chatBox, wrapper);
-    syncInlineActionCardAttr(body);
-    ztoolkit.log("Codex app-server native confirmation rendered", {
-      requestId,
-      toolName: action.toolName,
-      mode: action.mode || "approval",
-      source: "inline",
+    scheduleCodexConfirmationCardFallback({
+      schedule: (callback, delayMs) => {
+        const view = ownerDoc.defaultView;
+        if (view) {
+          view.setTimeout(callback, delayMs);
+        } else {
+          callback();
+        }
+      },
+      isPending: () => pending,
+      findTraceCard: () => findNativeMcpTraceActionCard(chatBox, requestId),
+      useTraceCard: (renderedCard) => {
+        const inlineCards = Array.from(
+          chatBox.querySelectorAll(".llm-action-inline-card"),
+        ) as HTMLElement[];
+        for (const card of inlineCards) {
+          if (card.dataset.requestId === requestId) card.remove();
+        }
+        scrollNativeMcpActionCardIntoView(chatBox, renderedCard);
+        syncInlineActionCardAttr(body);
+        ztoolkit.log("Codex app-server native confirmation rendered", {
+          requestId,
+          toolName: action.toolName,
+          mode: action.mode || "approval",
+          source: "trace",
+        });
+      },
+      showInlineFallback: () => {
+        const inlineCards = Array.from(
+          chatBox.querySelectorAll(".llm-action-inline-card"),
+        ) as HTMLElement[];
+        const existingCard =
+          inlineCards.find((card) => card.dataset.requestId === requestId) ||
+          null;
+        for (const card of inlineCards) {
+          if (card !== existingCard) card.remove();
+        }
+        if (existingCard) {
+          scrollNativeMcpActionCardIntoView(chatBox, existingCard);
+          syncInlineActionCardAttr(body);
+          return;
+        }
+        const wrapper = ownerDoc.createElement("div");
+        wrapper.className =
+          "llm-action-inline-card llm-action-inline-card-review";
+        wrapper.dataset.requestId = requestId;
+        wrapper.appendChild(
+          renderPendingActionCard(ownerDoc, { requestId, action }),
+        );
+        chatBox.appendChild(wrapper);
+        scrollNativeMcpActionCardIntoView(chatBox, wrapper);
+        syncInlineActionCardAttr(body);
+        ztoolkit.log("Codex app-server native confirmation rendered", {
+          requestId,
+          toolName: action.toolName,
+          mode: action.mode || "approval",
+          source: "inline",
+        });
+      },
     });
   });
 }
@@ -3124,7 +3181,9 @@ export function beginPanelRequest(
   const conversationKey = getConversationKey(item);
   const requestId = nextRequestId();
   const AbortControllerCtor = getAbortControllerCtor();
-  const abortController = AbortControllerCtor ? new AbortControllerCtor() : null;
+  const abortController = AbortControllerCtor
+    ? new AbortControllerCtor()
+    : null;
   if (!tryBeginRequest(conversationKey, requestId, abortController)) {
     return null;
   }

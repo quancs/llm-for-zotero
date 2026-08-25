@@ -3,7 +3,10 @@ import type {
   AgentConfirmationResolution,
   AgentPendingAction,
 } from "../src/agent/types";
-import { resolveCodexNativeApprovalWithOptionalReviewCard } from "../src/modules/contextPanel/chat";
+import {
+  resolveCodexNativeApprovalWithOptionalReviewCard,
+  scheduleCodexConfirmationCardFallback,
+} from "../src/modules/contextPanel/chat";
 
 describe("Codex native approval bridge", function () {
   const body = {} as Element;
@@ -122,5 +125,63 @@ describe("Codex native approval bridge", function () {
       statuses.entries.at(-1)?.text,
       "approval UI was unavailable",
     );
+  });
+
+  it("waits for the trace approval card before showing an inline fallback", function () {
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    const traceCard = { source: "trace" };
+    const used: Array<typeof traceCard> = [];
+    let inlineFallbacks = 0;
+
+    scheduleCodexConfirmationCardFallback({
+      schedule: (callback, delayMs) => {
+        scheduled.push({ callback, delayMs });
+      },
+      isPending: () => true,
+      findTraceCard: () => traceCard,
+      useTraceCard: (card) => used.push(card),
+      showInlineFallback: () => {
+        inlineFallbacks += 1;
+      },
+    });
+
+    assert.deepEqual(used, []);
+    assert.equal(inlineFallbacks, 0);
+    assert.equal(scheduled[0]?.delayMs, 90);
+
+    scheduled[0]?.callback();
+    assert.deepEqual(used, [traceCard]);
+    assert.equal(inlineFallbacks, 0);
+  });
+
+  it("shows one inline fallback only when the trace card is still absent", function () {
+    const scheduled: Array<() => void> = [];
+    let pending = true;
+    let inlineFallbacks = 0;
+
+    scheduleCodexConfirmationCardFallback({
+      schedule: (callback) => scheduled.push(callback),
+      isPending: () => pending,
+      findTraceCard: () => null,
+      useTraceCard: () => assert.fail("unexpected trace card"),
+      showInlineFallback: () => {
+        inlineFallbacks += 1;
+      },
+    });
+    scheduled[0]?.();
+    assert.equal(inlineFallbacks, 1);
+
+    scheduleCodexConfirmationCardFallback({
+      schedule: (callback) => scheduled.push(callback),
+      isPending: () => pending,
+      findTraceCard: () => null,
+      useTraceCard: () => assert.fail("unexpected trace card"),
+      showInlineFallback: () => {
+        inlineFallbacks += 1;
+      },
+    });
+    pending = false;
+    scheduled[1]?.();
+    assert.equal(inlineFallbacks, 1);
   });
 });
