@@ -7,6 +7,7 @@ import {
 } from "../../store/journalRecoveryBlobStore";
 import type { AgentToolContext, AgentWriteToolDefinition } from "../../types";
 import {
+  noteHtmlToMarkdownText,
   normalizeNoteSourceText,
   stripNoteHtml,
   renderRawNoteHtml,
@@ -58,6 +59,21 @@ function sanitizeNoteHtml(html: string): string {
 /** Detect whether an HTML string contains inline `style=` attributes. */
 function htmlHasInlineStyles(html: string): boolean {
   return /<[^>]+\bstyle\s*=/i.test(html);
+}
+
+async function buildNoteHtmlPostcondition(noteId: number, html: string) {
+  if (htmlHasInlineStyles(html)) {
+    return {
+      kind: "note_html" as const,
+      noteId,
+      checksum: await sha256Text(html),
+    };
+  }
+  return {
+    kind: "note_html" as const,
+    noteId,
+    sourceChecksum: await sha256Text(noteHtmlToMarkdownText(html)),
+  };
 }
 
 type EditCurrentNoteInput = {
@@ -135,12 +151,17 @@ function applyPatches(base: string, patches: NotePatch[]): string {
   let result = base;
   for (const patch of patches) {
     const index = result.indexOf(patch.find);
-    if (index >= 0) {
-      result =
-        result.slice(0, index) +
-        patch.replace +
-        result.slice(index + patch.find.length);
+    if (index < 0) {
+      throw new Error(
+        `Patch text was not found in the current note: ${JSON.stringify(
+          patch.find,
+        )}. Refresh the note and try again.`,
+      );
     }
+    result =
+      result.slice(0, index) +
+      patch.replace +
+      result.slice(index + patch.find.length);
   }
   return result;
 }
@@ -198,6 +219,59 @@ function renderReplacementAsInlineHtml(text: string): string {
   }
 }
 
+type MarkdownLink = { label: string; href: string };
+
+function parseStandaloneMarkdownLink(text: string): MarkdownLink | null {
+  const match = text.match(/^\[([^\]\n]+)\]\(([^\s]+)\)$/);
+  if (!match) return null;
+  return { label: match[1], href: match[2] };
+}
+
+function decodeHtmlAttribute(text: string): string {
+  return text
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+/** Replace one Markdown link patch directly in its source anchor. */
+function replaceMarkdownLinkInHtml(
+  html: string,
+  find: string,
+  replace: string,
+): string | null {
+  const before = parseStandaloneMarkdownLink(find);
+  const after = parseStandaloneMarkdownLink(replace);
+  if (!before || !after) return null;
+
+  const anchors = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = anchors.exec(html)) !== null) {
+    const attrs = match[1] || "";
+    const hrefMatch = attrs.match(/\bhref\s*=\s*(["'])(.*?)\1/i);
+    if (!hrefMatch) continue;
+    const href = decodeHtmlAttribute(hrefMatch[2]).trim();
+    const label = stripNoteHtml(match[2] || "").trim();
+    if (href !== before.href || label !== before.label) continue;
+
+    const nextAttrs = attrs.replace(
+      hrefMatch[0],
+      `href="${escapeNoteHtml(after.href)}"`,
+    );
+    const nextLabel =
+      after.label === before.label ? match[2] : escapeNoteHtml(after.label);
+    const nextAnchor = `<a${nextAttrs}>${nextLabel}</a>`;
+    return (
+      html.slice(0, match.index) +
+      nextAnchor +
+      html.slice(match.index + match[0].length)
+    );
+  }
+  return null;
+}
+
 /**
  * Find plain text content within HTML (skipping tags and decoding common
  * entities) and replace it, preserving surrounding HTML structure.
@@ -212,12 +286,17 @@ function replaceTextContentInHtml(
 ): string | null {
   if (!find) return html;
 
+  // Markdown snapshots expose links as [label](href), while Zotero stores
+  // them as anchors. Handle this common patch without re-rendering the note.
+  const linkPatched = replaceMarkdownLinkInHtml(html, find, replace);
+  if (linkPatched !== null) return linkPatched;
+
   // Strategy 1: Direct match (no entities or inline tags in the way)
   const directIdx = html.indexOf(find);
   if (directIdx >= 0) {
     return (
       html.slice(0, directIdx) +
-      escapeNoteHtml(replace) +
+      renderReplacementAsInlineHtml(replace) +
       html.slice(directIdx + find.length)
     );
   }
@@ -698,9 +777,12 @@ export function createEditCurrentNoteTool(
           snapshot.html,
           inputExt._patches,
         );
-        if (patchedHtml) {
-          input._patchedHtml = patchedHtml;
+        if (!patchedHtml) {
+          throw new Error(
+            "The patch matched the note text but could not be applied to the original HTML without re-rendering the whole note. No changes were made. Use a smaller plain-text/link patch or refresh the note and try again.",
+          );
         }
+        input._patchedHtml = patchedHtml;
         delete inputExt._patches;
       }
 
@@ -1199,15 +1281,12 @@ export function createEditCurrentNoteTool(
                 title: snapshot.title,
                 noteText: buildAppendedNoteText(snapshot.text, appendedText),
               },
-              expectedPostcondition: {
-                kind: "note_html",
-                noteId: snapshot.noteId,
+              expectedPostcondition: await buildNoteHtmlPostcondition(
+                snapshot.noteId,
                 // persistVerifiedNoteHtml reloads from Zotero before it
-                // returns. Guard the representation Zotero actually stored,
-                // including its optional note wrapper, so an immediate undo
-                // cannot conflict with our own successful write.
-                checksum: await sha256Text(targetNote.getNote?.() || nextHtml),
-              },
+                // returns. Guard the representation Zotero actually stored.
+                targetNote.getNote?.() || nextHtml,
+              ),
               reversibility: hasLocalImages
                 ? ("partial" as const)
                 : ("full" as const),
@@ -1299,13 +1378,10 @@ export function createEditCurrentNoteTool(
               title: result.title,
               noteText: result.nextText,
             },
-            expectedPostcondition: {
-              kind: "note_html",
-              noteId: result.noteId,
-              checksum: await sha256Text(
-                current?.getNote?.() || renderedNextHtml,
-              ),
-            },
+            expectedPostcondition: await buildNoteHtmlPostcondition(
+              result.noteId,
+              current?.getNote?.() || renderedNextHtml,
+            ),
             reversibility: hasLocalImages
               ? ("partial" as const)
               : ("full" as const),

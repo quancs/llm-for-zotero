@@ -2641,6 +2641,103 @@ describe("primitive agent tools", function () {
     assert.equal(validated.value.noteId, 77);
   });
 
+  it("patches a Zotero Markdown link in-place without rewriting unrelated HTML", async function () {
+    const originalHtml = [
+      '<div data-schema-version="9">',
+      '<h2><a href="zotero://open-pdf/library/items/PPO123">PPO</a></h2>',
+      '<ul><li><strong><a href="zotero://open-pdf/library/items/DPO123">DPO</a>：</strong>pairwise loss</li></ul>',
+      '<p><a href="zotero://open-pdf/library/items/IPO123">IPO</a> remains unchanged.</p>',
+      "</div>",
+    ].join("");
+    let preRenderedHtml = "";
+    const tool = createEditCurrentNoteTool({
+      getActiveNoteSnapshot: () => ({
+        noteId: 55,
+        title: "Reading route",
+        html: originalHtml,
+        text: [
+          "## [PPO](zotero://open-pdf/library/items/PPO123)",
+          "",
+          "- **[DPO](zotero://open-pdf/library/items/DPO123)：**pairwise loss",
+          "",
+          "[IPO](zotero://open-pdf/library/items/IPO123) remains unchanged.",
+        ].join("\n"),
+        libraryID: 1,
+        noteKind: "standalone",
+      }),
+      replaceCurrentNote: async (params: {
+        content: string;
+        preRenderedHtml?: string;
+      }) => {
+        preRenderedHtml = params.preRenderedHtml || "";
+        return {
+          noteId: 55,
+          title: "Reading route",
+          previousHtml: originalHtml,
+          previousText: "",
+          nextText: params.content,
+        };
+      },
+      restoreNoteHtml: async () => undefined,
+    } as never);
+    const validated = tool.validate({
+      mode: "edit",
+      patches: [
+        {
+          find: "[DPO](zotero://open-pdf/library/items/DPO123)",
+          replace: "[DPO](zotero://note/u/NOTE123/)",
+        },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    tool.createPendingAction?.(validated.value, baseContext);
+    const confirmed = tool.applyConfirmation?.(
+      validated.value,
+      {},
+      baseContext,
+    );
+    assert.isTrue(confirmed?.ok);
+    if (!confirmed?.ok) return;
+    await tool.execute(confirmed.value, baseContext);
+
+    assert.include(preRenderedHtml, 'href="zotero://note/u/NOTE123/">DPO</a>');
+    assert.include(
+      preRenderedHtml,
+      'href="zotero://open-pdf/library/items/PPO123">PPO</a>',
+    );
+    assert.include(
+      preRenderedHtml,
+      'href="zotero://open-pdf/library/items/IPO123">IPO</a>',
+    );
+    assert.include(preRenderedHtml, "<ul><li><strong>");
+  });
+
+  it("rejects an unmatched note patch instead of rewriting the whole note", function () {
+    const tool = createEditCurrentNoteTool({
+      getActiveNoteSnapshot: () => ({
+        noteId: 55,
+        title: "Protected note",
+        html: '<p><a href="zotero://note/u/NOTE123/">DPO</a></p>',
+        text: "[DPO](zotero://note/u/NOTE123/)",
+        libraryID: 1,
+        noteKind: "standalone",
+      }),
+    } as never);
+    const validated = tool.validate({
+      mode: "edit",
+      patches: [{ find: "Missing text", replace: "Replacement" }],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    assert.throws(
+      () => tool.createPendingAction?.(validated.value, baseContext),
+      /Patch text was not found/,
+    );
+  });
+
   it("edit_current_note rejects accidental heading demotion", function () {
     const tool = createEditCurrentNoteTool({
       getActiveNoteSnapshot: () => ({

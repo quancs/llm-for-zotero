@@ -15,6 +15,33 @@ describe("note snapshots", function () {
     );
   });
 
+  it("preserves links, emphasis, lists, and code in model-facing note text", function () {
+    const html = [
+      '<div data-schema-version="9">',
+      '<h2>Read <a href="zotero://open-pdf/library/items/ABC123">PPO</a></h2>',
+      '<ul><li><strong><a href="zotero://note/u/NOTE123/">DPO</a>：</strong>pairwise loss</li></ul>',
+      "<p>Keep <em>this</em> and <code>x &lt; y</code>.</p>",
+      "<pre>line 1\nline 2</pre>",
+      "</div>",
+    ].join("");
+
+    assert.equal(
+      noteHtmlToMarkdownText(html),
+      [
+        "## Read [PPO](zotero://open-pdf/library/items/ABC123)",
+        "",
+        "- **[DPO](zotero://note/u/NOTE123/)：**pairwise loss",
+        "",
+        "Keep *this* and `x < y`.",
+        "",
+        "```",
+        "line 1",
+        "line 2",
+        "```",
+      ].join("\n"),
+    );
+  });
+
   it("keeps the plain-text stripper unchanged for comparison callers", function () {
     assert.equal(
       stripNoteHtml("<h1>Main</h1><h2>Details</h2>"),

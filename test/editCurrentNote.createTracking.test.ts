@@ -4,6 +4,7 @@ import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import {
   createAssistantResponseNote,
   createNoteFromChatHistory,
+  noteHtmlToMarkdownText,
 } from "../src/modules/contextPanel/notes";
 import {
   getTrackedAssistantNoteForParent,
@@ -406,9 +407,12 @@ describe("editCurrentNote create tracking", function () {
     });
     const postcondition = JSON.parse(
       action.steps[0].expectedPostconditionJson || "{}",
-    ) as { checksum?: string };
+    ) as { sourceChecksum?: string };
 
-    assert.equal(postcondition.checksum, await sha256Text(persistedHtml));
+    assert.equal(
+      postcondition.sourceChecksum,
+      await sha256Text(noteHtmlToMarkdownText(persistedHtml)),
+    );
     const reverted = await revertActions({
       actions: [action],
       zoteroGateway: gateway,

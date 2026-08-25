@@ -25,6 +25,7 @@ import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
 import { createFileIOTool } from "../src/agent/tools/write/fileIO";
 import { createZoteroScriptTool } from "../src/agent/tools/write/zoteroScript";
 import { sha256Text } from "../src/agent/store/journalRecoveryBlobStore";
+import { noteHtmlToMarkdownText } from "../src/modules/contextPanel/noteSnapshot";
 import type { AgentToolContext } from "../src/agent/types";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 
@@ -2863,6 +2864,147 @@ describe("durable change journal v2", function () {
       db.actions.get("completed-preference-inverse")?.status,
       "reverted",
     );
+  });
+
+  it("recognizes a manually restored note after harmless reserialization", async function () {
+    await prepareAction({
+      id: "manually-restored-note",
+      createdAt: 1_382.25,
+      operation: "replace_note_html",
+      inverse: {
+        version: 1,
+        kind: "note_html",
+        noteId: 7,
+        html: "<div><p><strong>Before</strong></p></div>",
+      },
+      expectedPostcondition: {
+        kind: "note_html",
+        noteId: 7,
+        checksum: await sha256Text("<p>Agent text</p>"),
+      },
+    });
+    let writes = 0;
+    const gateway = {
+      getItem: (itemId: number) =>
+        itemId === 7
+          ? {
+              getNote: () =>
+                '<div data-schema-version="9">\n<p><strong>Before</strong></p>\n</div>',
+            }
+          : null,
+      restoreNoteHtml: async () => {
+        writes += 1;
+      },
+    } as never;
+    const actions = await listJournalActions({
+      conversationKey: 77,
+      pendingOnly: true,
+      limit: 1,
+    });
+
+    const outcome = await revertActions({
+      actions,
+      zoteroGateway: gateway,
+      context,
+    });
+
+    assert.equal(outcome.reverted, 1);
+    assert.equal(outcome.conflicts.length, 0);
+    assert.equal(writes, 0);
+    assert.equal(db.actions.get("manually-restored-note")?.status, "reverted");
+  });
+
+  it("undoes a note after harmless Zotero HTML reserialization", async function () {
+    const agentHtml =
+      '<div><p><strong><a href="zotero://note/u/NOTE123/">DPO</a>：</strong>pairwise loss</p></div>';
+    await prepareAction({
+      id: "reserialized-note-undo",
+      createdAt: 1_382.5,
+      operation: "replace_note_html",
+      inverse: {
+        version: 1,
+        kind: "note_html",
+        noteId: 7,
+        html: "<p>Before</p>",
+      },
+      expectedPostcondition: {
+        kind: "note_html",
+        noteId: 7,
+        sourceChecksum: await sha256Text(noteHtmlToMarkdownText(agentHtml)),
+      },
+    });
+    let currentHtml =
+      '<div data-schema-version="9">\n<p><strong><a rel="noopener" href="zotero://note/u/NOTE123/">DPO</a>：</strong>pairwise loss</p>\n</div>';
+    const gateway = {
+      getItem: (itemId: number) =>
+        itemId === 7 ? { getNote: () => currentHtml } : null,
+      restoreNoteHtml: async ({ html }: { html: string }) => {
+        currentHtml = html;
+      },
+    } as never;
+    const actions = await listJournalActions({
+      conversationKey: 77,
+      pendingOnly: true,
+      limit: 1,
+    });
+
+    const outcome = await revertActions({
+      actions,
+      zoteroGateway: gateway,
+      context,
+    });
+
+    assert.equal(outcome.reverted, 1);
+    assert.equal(outcome.conflicts.length, 0);
+    assert.equal(currentHtml, "<p>Before</p>");
+  });
+
+  it("still blocks note undo when only the link target changed", async function () {
+    const agentHtml = '<p><a href="zotero://note/u/NOTE123/">DPO</a></p>';
+    await prepareAction({
+      id: "changed-note-link-conflict",
+      createdAt: 1_382.6,
+      operation: "replace_note_html",
+      inverse: {
+        version: 1,
+        kind: "note_html",
+        noteId: 7,
+        html: "<p>Before</p>",
+      },
+      expectedPostcondition: {
+        kind: "note_html",
+        noteId: 7,
+        sourceChecksum: await sha256Text(noteHtmlToMarkdownText(agentHtml)),
+      },
+    });
+    let restored = false;
+    const gateway = {
+      getItem: (itemId: number) =>
+        itemId === 7
+          ? {
+              getNote: () =>
+                '<p><a href="zotero://note/u/USER_EDIT/">DPO</a></p>',
+            }
+          : null,
+      restoreNoteHtml: async () => {
+        restored = true;
+      },
+    } as never;
+    const actions = await listJournalActions({
+      conversationKey: 77,
+      pendingOnly: true,
+      limit: 1,
+    });
+
+    const outcome = await revertActions({
+      actions,
+      zoteroGateway: gateway,
+      context,
+    });
+
+    assert.equal(outcome.reverted, 0);
+    assert.equal(outcome.conflicts.length, 1);
+    assert.isFalse(restored);
   });
 
   it("preserves a concurrent file edit after post-claim completion", async function () {

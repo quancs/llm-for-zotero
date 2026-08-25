@@ -28,6 +28,33 @@ export function stripNoteHtml(html: string): string {
   return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function decodeNoteHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'");
+}
+
+function inlineNoteHtmlToMarkdown(html: string): string {
+  let text = html.replace(
+    /<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
+    (_match, _quote, href, label) => {
+      const plainLabel = stripNoteHtml(String(label || "")).trim();
+      const decodedHref = decodeNoteHtmlEntities(String(href || "")).trim();
+      if (!plainLabel) return decodedHref;
+      return decodedHref ? `[${plainLabel}](${decodedHref})` : plainLabel;
+    },
+  );
+  text = text.replace(
+    /<code[^>]*>([\s\S]*?)<\/code>/gi,
+    (_match, content) => `\`${stripNoteHtml(String(content || "")).trim()}\``,
+  );
+  return stripNoteHtml(text).trim();
+}
+
 /**
  * Convert stored Zotero note HTML into the Markdown-like source shown to the
  * model.  Zotero keeps heading levels in `<h1>` ... `<h6>` elements; flattening
@@ -37,16 +64,62 @@ export function stripNoteHtml(html: string): string {
  */
 export function noteHtmlToMarkdownText(html: string): string {
   if (!html) return "";
-  const withHeadingMarkers = html.replace(
+  let normalized = html.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, "");
+  normalized = normalized.replace(
+    /<pre[^>]*>([\s\S]*?)<\/pre>/gi,
+    (_match, content) =>
+      `\n\n\`\`\`\n${decodeNoteHtmlEntities(
+        stripNoteHtml(String(content || "")),
+      )}\n\`\`\`\n\n`,
+  );
+  normalized = normalized.replace(
     /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
     (_match, level, content) => {
-      const title = stripNoteHtml(String(content || "")).trim();
+      // Heading weight is already conveyed by the heading itself, but links
+      // remain semantically important (for example Zotero note/PDF links).
+      const title = inlineNoteHtmlToMarkdown(String(content || ""));
       return title
         ? `\n\n${"#".repeat(Number(level) || 1)} ${title}\n\n`
         : "\n";
     },
   );
-  return stripNoteHtml(withHeadingMarkers);
+  normalized = normalized.replace(
+    /<a\b[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
+    (_match, _quote, href, label) => {
+      const plainLabel = stripNoteHtml(String(label || "")).trim();
+      const decodedHref = decodeNoteHtmlEntities(String(href || "")).trim();
+      if (!plainLabel) return decodedHref;
+      return decodedHref ? `[${plainLabel}](${decodedHref})` : plainLabel;
+    },
+  );
+  normalized = normalized.replace(
+    /<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi,
+    (_match, _tag, content) => `**${stripNoteHtml(content).trim()}**`,
+  );
+  normalized = normalized.replace(
+    /<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi,
+    (_match, _tag, content) => `*${stripNoteHtml(content).trim()}*`,
+  );
+  normalized = normalized.replace(
+    /<code[^>]*>([\s\S]*?)<\/code>/gi,
+    (_match, content) => `\`${stripNoteHtml(content).trim()}\``,
+  );
+  normalized = normalized.replace(/<hr\s*\/?>/gi, "\n\n---\n\n");
+  normalized = normalized.replace(/<br\s*\/?>/gi, "\n");
+  normalized = normalized.replace(/<li[^>]*>/gi, "\n- ");
+  normalized = normalized.replace(/<\/li>/gi, "");
+  normalized = normalized.replace(/<blockquote[^>]*>/gi, "\n\n> ");
+  normalized = normalized.replace(/<\/blockquote>/gi, "\n\n");
+  normalized = normalized.replace(
+    /<\/(p|div|ul|ol|table|thead|tbody|tr)>/gi,
+    "\n\n",
+  );
+  normalized = normalized.replace(/<(?!img\b)[^>]+>/gi, "");
+  return decodeNoteHtmlEntities(normalized)
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function readNoteSnapshot(

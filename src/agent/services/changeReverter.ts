@@ -23,6 +23,7 @@ import {
   type RecoveryPayload,
 } from "../store/journalRecoveryBlobStore";
 import { withActiveJournalAction } from "./mutationCoordinator";
+import { noteHtmlToMarkdownText } from "../../modules/contextPanel/noteSnapshot";
 
 type LibraryOperationsInverse = {
   version: number;
@@ -147,6 +148,14 @@ function stable(value: unknown): string {
 function parseJson(value: string | undefined): unknown {
   if (!value) return undefined;
   return JSON.parse(value) as unknown;
+}
+
+function noteHtmlRecoveryMatches(current: string, expected: string): boolean {
+  const hasInlineStyles = (html: string) => /<[^>]+\bstyle\s*=/i.test(html);
+  if (hasInlineStyles(current) || hasInlineStyles(expected)) {
+    return current === expected;
+  }
+  return noteHtmlToMarkdownText(current) === noteHtmlToMarkdownText(expected);
 }
 
 export function isMutationOperation(
@@ -471,7 +480,9 @@ async function currentStepPostcondition(params: {
       kind: "note_html",
       noteId,
     };
-    if (Object.prototype.hasOwnProperty.call(expected, "checksum")) {
+    if (Object.prototype.hasOwnProperty.call(expected, "sourceChecksum")) {
+      current.sourceChecksum = await sha256Text(noteHtmlToMarkdownText(html));
+    } else if (Object.prototype.hasOwnProperty.call(expected, "checksum")) {
       current.checksum = await sha256Text(html);
     } else {
       current.html = html;
@@ -1805,7 +1816,7 @@ async function nonLibraryInverseIsSatisfied(params: {
   const { materialized, service } = params;
   if (materialized.kind === "note_html") {
     const item = service.getGateway().getItem(materialized.noteId);
-    return item?.getNote?.() === materialized.html;
+    return noteHtmlRecoveryMatches(item?.getNote?.() || "", materialized.html);
   }
   if (materialized.kind === "file_delete") {
     return (await readFileBytes(materialized.path)) === null;
@@ -1855,20 +1866,22 @@ async function classifyNonLibraryInverse(params: {
       },
     };
   }
-  if (params.step.status === "revert_failed") {
-    try {
-      if (
-        await nonLibraryInverseIsSatisfied({
-          materialized,
-          service: params.service,
-        })
-      ) {
-        return { kind: "completed" };
-      }
-    } catch {
-      // Fall through to the forward post-image guard. It returns a specific
-      // conflict when the target cannot be read safely.
+  try {
+    // The user or an earlier crash-recovery attempt may already have restored
+    // the pre-image. Treat that as completed even when the journal step never
+    // reached revert_failed; replaying it again is unnecessary and the
+    // forward post-image guard would otherwise report a false conflict.
+    if (
+      await nonLibraryInverseIsSatisfied({
+        materialized,
+        service: params.service,
+      })
+    ) {
+      return { kind: "completed" };
     }
+  } catch {
+    // Fall through to the forward post-image guard. It returns a specific
+    // conflict when the target cannot be read safely.
   }
   const conflict = await conflictForStep(params);
   return conflict ? { kind: "conflict", conflict } : { kind: "pending" };
