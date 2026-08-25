@@ -709,6 +709,7 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
       if (getNoteWriteBypassRefusal(input, context)) {
         return { effect: "none", reversibility: "full" };
       }
+      const confirmationReason = await getRunCommandConfirmationReason(input);
       const reversibleWrite = parseReversibleCommandWrite(input.command);
       if (reversibleWrite) {
         const outputPath = resolveCommandPath(reversibleWrite.path, input.cwd);
@@ -716,16 +717,18 @@ export function createRunCommandTool(): AgentWriteToolDefinition<
         return {
           effect: "write",
           reversibility: exists === false ? "partial" : "none",
+          requiresConfirmation: Boolean(confirmationReason),
           reason:
-            exists === false
+            confirmationReason ||
+            (exists === false
               ? "The declared new output can be removed, but other command effects cannot be proven reversible."
-              : "The command may affect paths or external state that have no complete declarative inverse.",
+              : "The command may affect paths or external state that have no complete declarative inverse."),
         };
       }
-      const confirmationReason = await getRunCommandConfirmationReason(input);
       return {
         effect: "write",
         reversibility: "none",
+        requiresConfirmation: Boolean(confirmationReason),
         reason:
           confirmationReason ||
           "Shell commands receive mutable local-machine access, so side effects cannot be proven absent or given a complete declarative inverse.",
