@@ -251,6 +251,40 @@ type AgentTurnEventContext = {
   uiRelease: { releaseReady: () => void };
 };
 
+export function createPendingConfirmationCardCoordinator(params: {
+  queueRefresh: () => void;
+  scheduleFallback: (callback: () => void, delayMs: number) => void;
+  showFallback: (requestId: string, action: AgentPendingAction) => void;
+  closeFallback: (requestId: string) => void;
+}): {
+  required: (requestId: string, action: AgentPendingAction) => void;
+  resolved: (requestId: string) => void;
+} {
+  const pending = new Map<
+    string,
+    { action: AgentPendingAction; generation: object }
+  >();
+  return {
+    required: (requestId, action) => {
+      const generation = {};
+      pending.set(requestId, { action, generation });
+      // The trace card is the primary surface. It is rendered by the queued
+      // assistant refresh before the fallback timer becomes eligible.
+      params.queueRefresh();
+      params.scheduleFallback(() => {
+        const current = pending.get(requestId);
+        if (!current || current.generation !== generation) return;
+        params.showFallback(requestId, current.action);
+      }, 90);
+    },
+    resolved: (requestId) => {
+      pending.delete(requestId);
+      params.closeFallback(requestId);
+      params.queueRefresh();
+    },
+  };
+}
+
 /**
  * The per-event consumer for an agent runtime turn. Send and retry previously
  * carried two hand-synchronized ~300-line copies of this switch; they differ
@@ -281,6 +315,18 @@ function createAgentTurnEventHandler(
     scheduleQueueDrain,
     uiRelease,
   } = ctx;
+  const confirmationCards = createPendingConfirmationCardCoordinator({
+    queueRefresh,
+    scheduleFallback: (callback, delayMs) => {
+      body.ownerDocument?.defaultView?.setTimeout(callback, delayMs);
+    },
+    showFallback: (requestId, action) => {
+      showInlineConfirmationCard(body, ui, requestId, action);
+    },
+    closeFallback: (requestId) => {
+      closeInlineConfirmationCard(body, ui, requestId);
+    },
+  });
   return async (event: AgentEvent): Promise<void> => {
     if (assistantMessage.agentRunId) {
       pushTraceEvent(assistantMessage.agentRunId, event);
@@ -461,16 +507,11 @@ function createAgentTurnEventHandler(
         setStatusSafely(event.reason, "sending");
         break;
       case "confirmation_required":
-        showInlineConfirmationCard(body, ui, event.requestId, event.action);
-        queueRefresh();
-        body.ownerDocument?.defaultView?.setTimeout(() => {
-          showInlineConfirmationCard(body, ui, event.requestId, event.action);
-        }, 90);
+        confirmationCards.required(event.requestId, event.action);
         setStatusSafely("Approval required", "sending");
         return;
       case "confirmation_resolved":
-        closeInlineConfirmationCard(body, ui, event.requestId);
-        queueRefresh();
+        confirmationCards.resolved(event.requestId);
         setStatusSafely(
           event.approved ? "Approval sent" : "Action denied",
           "sending",
@@ -823,7 +864,13 @@ function findRenderedPendingActionCard(
   const cards = Array.from(
     chatBox.querySelectorAll(".llm-agent-hitl-card[data-request-id]"),
   ) as HTMLElement[];
-  return cards.find((card) => card.dataset.requestId === requestId) || null;
+  return (
+    cards.find(
+      (card) =>
+        card.dataset.requestId === requestId &&
+        !card.closest(".llm-action-inline-card"),
+    ) || null
+  );
 }
 
 function showInlineConfirmationCard(
@@ -835,10 +882,25 @@ function showInlineConfirmationCard(
   const chatBox = ui.chatBox;
   const ownerDoc = body.ownerDocument;
   if (!chatBox || !ownerDoc) return;
-  chatBox.querySelector(".llm-action-inline-card")?.remove();
   const renderedCard = findRenderedPendingActionCard(chatBox, requestId);
   if (renderedCard) {
+    chatBox
+      .querySelectorAll(".llm-action-inline-card")
+      .forEach((card) => card.remove());
     scrollActionCardIntoView(chatBox, renderedCard);
+    syncInlineActionCardState(body, ui);
+    return;
+  }
+  const inlineCards = Array.from(
+    chatBox.querySelectorAll(".llm-action-inline-card"),
+  ) as HTMLElement[];
+  const existingCard =
+    inlineCards.find((card) => card.dataset.requestId === requestId) || null;
+  for (const card of inlineCards) {
+    if (card !== existingCard) card.remove();
+  }
+  if (existingCard) {
+    scrollActionCardIntoView(chatBox, existingCard);
     syncInlineActionCardState(body, ui);
     return;
   }
