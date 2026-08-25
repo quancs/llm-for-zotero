@@ -3,9 +3,11 @@ import { t } from "../../../../utils/i18n";
 import { addSelectedTextContext } from "../../contextResolution";
 import {
   clampNumber,
+  getRenderedMathSelectionClipboardPayload,
   getSelectedTextWithinBubble,
   sanitizeText,
   setStatus,
+  type RenderedMathSelectionClipboardPayload,
 } from "../../textUtils";
 
 type AssistantSelectionPopupDeps = {
@@ -22,6 +24,17 @@ type AssistantSelectionPopupDeps = {
   updateSelectedTextPreviewPreservingScroll: () => void;
   isElementNode: (value: unknown) => value is Element;
 };
+
+export function copyRenderedMathSelectionToClipboard(
+  event: ClipboardEvent,
+  payload: RenderedMathSelectionClipboardPayload | null,
+): boolean {
+  if (!payload || !event.clipboardData) return false;
+  event.preventDefault();
+  event.clipboardData.setData("text/html", payload.renderedHtml);
+  event.clipboardData.setData("text/plain", payload.plainText);
+  return true;
+}
 
 export function attachAssistantSelectionPopup(
   deps: AssistantSelectionPopupDeps,
@@ -283,6 +296,15 @@ export function attachAssistantSelectionPopup(
   };
   const onChatScrollHide = () => hideSelectionPopup();
   const onChatContextMenu = () => hideSelectionPopup();
+  const onAssistantSelectionCopy = (e: Event) => {
+    const targetBubble = findAssistantBubbleFromSelection();
+    if (!targetBubble || targetBubble.closest(".llm-agent-reasoning")) return;
+    const payload = getRenderedMathSelectionClipboardPayload(
+      panelDoc,
+      targetBubble,
+    );
+    copyRenderedMathSelectionToClipboard(e as ClipboardEvent, payload);
+  };
 
   let selectionPopupHandled = false;
   const triggerSelectionPopupAction = (e: Event) => {
@@ -317,6 +339,7 @@ export function attachAssistantSelectionPopup(
 
   panelDoc.addEventListener("mouseup", onPanelMouseUp, true);
   panelDoc.addEventListener("keyup", onDocKeyUp, true);
+  panelDoc.addEventListener("copy", onAssistantSelectionCopy, true);
   panelRoot.addEventListener("pointerdown", onPanelPointerDown, true);
   chatBox?.addEventListener("scroll", onChatScrollHide, { passive: true });
   chatBox?.addEventListener("contextmenu", onChatContextMenu, true);
@@ -325,6 +348,7 @@ export function attachAssistantSelectionPopup(
   disposeSelectionPopup = () => {
     panelDoc.removeEventListener("mouseup", onPanelMouseUp, true);
     panelDoc.removeEventListener("keyup", onDocKeyUp, true);
+    panelDoc.removeEventListener("copy", onAssistantSelectionCopy, true);
     panelRoot.removeEventListener("pointerdown", onPanelPointerDown, true);
     chatBox?.removeEventListener("scroll", onChatScrollHide);
     chatBox?.removeEventListener("contextmenu", onChatContextMenu, true);

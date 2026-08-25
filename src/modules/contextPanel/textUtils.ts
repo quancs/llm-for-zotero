@@ -524,6 +524,105 @@ export function getCurrentLocalTimestamp(): string {
  * with its original LaTeX source wrapped in `$...$` (inline) or `$$...$$`
  * (display).
  */
+export type RenderedMathSelectionClipboardPayload = {
+  plainText: string;
+  renderedHtml: string;
+};
+
+function replaceRenderedMathWithLatex(
+  doc: Document,
+  container: HTMLElement,
+): boolean {
+  const hasRenderedMath = Boolean(
+    container.querySelector(".katex, .katex-mathml, .katex-html"),
+  );
+
+  const katexEls = Array.from(
+    container.querySelectorAll(".katex"),
+  ) as Element[];
+  for (const el of katexEls) {
+    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+    if (ann) {
+      const latex = (ann.textContent || "").trim();
+      const mathEl = ann.closest("math");
+      const isDisplay = mathEl?.getAttribute("display") === "block";
+      el.replaceWith(
+        doc.createTextNode(isDisplay ? `$$${latex}$$` : `$${latex}$`),
+      );
+      continue;
+    }
+    const mathml = el.querySelector(".katex-mathml");
+    if (mathml) mathml.remove();
+  }
+
+  const strayMathml = Array.from(
+    container.querySelectorAll(".katex-mathml"),
+  ) as Element[];
+  for (const el of strayMathml) el.remove();
+  return hasRenderedMath;
+}
+
+function closestKatexElement(node: Node | null): Element | null {
+  if (!node) return null;
+  const element =
+    node.nodeType === 1 ? (node as Element) : node.parentElement || null;
+  return element?.closest(".katex") || null;
+}
+
+/**
+ * Build the two clipboard representations used by KaTeX's copy-tex
+ * extension, scoped to an assistant bubble instead of the global document.
+ */
+export function getRenderedMathSelectionClipboardPayload(
+  doc: Document,
+  container: HTMLElement,
+): RenderedMathSelectionClipboardPayload | null {
+  const selection = doc.defaultView?.getSelection?.();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return null;
+  }
+  if (
+    !selection.anchorNode ||
+    !selection.focusNode ||
+    !container.contains(selection.anchorNode) ||
+    !container.contains(selection.focusNode)
+  ) {
+    return null;
+  }
+
+  try {
+    const range = selection.getRangeAt(0).cloneRange();
+    const startKatex = closestKatexElement(range.startContainer);
+    const endKatex = closestKatexElement(range.endContainer);
+    if (startKatex && container.contains(startKatex)) {
+      range.setStartBefore(startKatex);
+    }
+    if (endKatex && container.contains(endKatex)) {
+      range.setEndAfter(endKatex);
+    }
+
+    const fragment = range.cloneContents();
+    if (!fragment.querySelector(".katex-mathml")) return null;
+    const renderedHtml = Array.from(fragment.childNodes)
+      .filter((node): node is Node => Boolean(node))
+      .map((node) =>
+        node.nodeType === 3
+          ? node.textContent || ""
+          : (node as Element).outerHTML || node.textContent || "",
+      )
+      .join("");
+    const temp = doc.createElement("div");
+    temp.appendChild(fragment);
+    replaceRenderedMathWithLatex(doc, temp);
+    const plainText = sanitizeText(temp.textContent || "");
+    if (!plainText.trim()) return null;
+    return { plainText, renderedHtml };
+  } catch (err) {
+    ztoolkit.log("LLM: Math selection clipboard extraction failed:", err);
+    return null;
+  }
+}
+
 export function getSelectedTextWithinBubble(
   doc: Document,
   container: HTMLElement,
@@ -550,28 +649,7 @@ export function getSelectedTextWithinBubble(
     const fragment = range.cloneContents();
     const temp = doc.createElement("div");
     temp.appendChild(fragment);
-
-    const katexEls = Array.from(temp.querySelectorAll(".katex")) as Element[];
-    for (const el of katexEls) {
-      const ann = el.querySelector('annotation[encoding="application/x-tex"]');
-      if (ann) {
-        const latex = (ann.textContent || "").trim();
-        const mathEl = ann.closest("math");
-        const isDisplay = mathEl?.getAttribute("display") === "block";
-        el.replaceWith(
-          doc.createTextNode(isDisplay ? `$$${latex}$$` : `$${latex}$`),
-        );
-        continue;
-      }
-      const mathml = el.querySelector(".katex-mathml");
-      if (mathml) mathml.remove();
-    }
-
-    const strayMathml = Array.from(
-      temp.querySelectorAll(".katex-mathml"),
-    ) as Element[];
-    for (const el of strayMathml) el.remove();
-
+    replaceRenderedMathWithLatex(doc, temp);
     return sanitizeText(temp.textContent || "").trim();
   } catch (err) {
     ztoolkit.log("LLM: Selected text extraction failed:", err);
