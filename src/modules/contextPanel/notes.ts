@@ -32,6 +32,7 @@ import type {
   SelectedTextSource,
 } from "./types";
 import {
+  noteHtmlToMarkdownText,
   readNoteSnapshot,
   stripNoteHtml,
   type NoteSnapshot,
@@ -82,7 +83,12 @@ import {
   type NotePersistenceSaveOptions,
 } from "./notePersistence";
 
-export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
+export {
+  noteHtmlToMarkdownText,
+  readNoteSnapshot,
+  stripNoteHtml,
+  type NoteSnapshot,
+};
 
 function decodeNoteHtmlEntities(text: string): string {
   return text

@@ -2641,6 +2641,58 @@ describe("primitive agent tools", function () {
     assert.equal(validated.value.noteId, 77);
   });
 
+  it("edit_current_note rejects accidental heading demotion", function () {
+    const tool = createEditCurrentNoteTool({
+      getActiveNoteSnapshot: () => ({
+        noteId: 55,
+        title: "Structured Note",
+        html: "<h1>Overview</h1><h2>Details</h2><p>Body</p>",
+        text: "# Overview\n\n## Details\nBody",
+        libraryID: 1,
+        noteKind: "standalone",
+      }),
+    } as never);
+    const validated = tool.validate({
+      mode: "edit",
+      content: "Overview\n\nDetails\nBody revised",
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    assert.throws(
+      () => tool.createPendingAction?.(validated.value, baseContext),
+      /remove or change existing heading formatting/,
+    );
+  });
+
+  it("edit_current_note permits explicitly requested heading changes", function () {
+    const tool = createEditCurrentNoteTool({
+      getActiveNoteSnapshot: () => ({
+        noteId: 55,
+        title: "Structured Note",
+        html: "<h1>Overview</h1><p>Body</p>",
+        text: "# Overview\nBody",
+        libraryID: 1,
+        noteKind: "standalone",
+      }),
+    } as never);
+    const validated = tool.validate({
+      mode: "edit",
+      content: "## Overview\nBody",
+      allowHeadingChanges: true,
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const pending = tool.createPendingAction?.(validated.value, baseContext);
+    const reviewField = pending?.fields[0] as Extract<
+      NonNullable<typeof pending>["fields"][number],
+      { type: "diff_preview" }
+    >;
+    assert.equal(reviewField.before, "# Overview\nBody");
+    assert.equal(reviewField.after, "## Overview\nBody");
+  });
+
   it("edit_current_note does not police incomplete MinerU figure-block embeds before mutation", async function () {
     let replacedContent = "";
     const tool = createEditCurrentNoteTool({

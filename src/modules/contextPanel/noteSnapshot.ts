@@ -28,6 +28,27 @@ export function stripNoteHtml(html: string): string {
   return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/**
+ * Convert stored Zotero note HTML into the Markdown-like source shown to the
+ * model.  Zotero keeps heading levels in `<h1>` ... `<h6>` elements; flattening
+ * those elements to plain text makes a later full-note rewrite silently demote
+ * every heading.  Preserve the markers while retaining the lightweight plain
+ * text representation used by the rest of the note context pipeline.
+ */
+export function noteHtmlToMarkdownText(html: string): string {
+  if (!html) return "";
+  const withHeadingMarkers = html.replace(
+    /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
+    (_match, level, content) => {
+      const title = stripNoteHtml(String(content || "")).trim();
+      return title
+        ? `\n\n${"#".repeat(Number(level) || 1)} ${title}\n\n`
+        : "\n";
+    },
+  );
+  return stripNoteHtml(withHeadingMarkers);
+}
+
 export function readNoteSnapshot(
   item: Zotero.Item | null | undefined,
 ): NoteSnapshot | null {
@@ -44,7 +65,7 @@ export function readNoteSnapshot(
         : undefined,
     title: resolveNoteTitle(item),
     html,
-    text: stripNoteHtml(html),
+    text: noteHtmlToMarkdownText(html),
     libraryID: Number(item?.libraryID) || 0,
     parentItemId: parentItem?.id,
     parentItemKey:

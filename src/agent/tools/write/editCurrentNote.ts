@@ -63,6 +63,10 @@ function htmlHasInlineStyles(html: string): boolean {
 type EditCurrentNoteInput = {
   mode: "edit" | "create" | "append";
   content: string;
+  /** Permit an explicit request to add, remove, or change heading levels.
+   *  Without this opt-in, accidental heading demotion in a full rewrite is
+   *  rejected before the review card is created. */
+  allowHeadingChanges?: boolean;
   expectedOriginalHtml?: string;
   /** Pre-patched HTML computed by applying patches directly to the original
    *  note HTML.  When set, `execute()` uses this instead of round-tripping
@@ -139,6 +143,43 @@ function applyPatches(base: string, patches: NotePatch[]): string {
     }
   }
   return result;
+}
+
+type MarkdownHeading = { level: number; title: string };
+
+function listMarkdownHeadings(text: string): MarkdownHeading[] {
+  const headings: MarkdownHeading[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\s{0,3}(#{1,6})[ \t]+(.+?)\s*$/);
+    if (!match) continue;
+    headings.push({
+      level: match[1].length,
+      // CommonMark closing markers require whitespace before the trailing
+      // hashes. Keep a legitimate title such as "C#" intact.
+      title: match[2].replace(/[ \t]+#+[ \t]*$/, "").trim(),
+    });
+  }
+  return headings;
+}
+
+function findChangedOrDemotedHeadings(
+  before: string,
+  after: string,
+): MarkdownHeading[] {
+  const afterHeadings = listMarkdownHeadings(after);
+  const afterLines = new Set(
+    after
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
+  return listMarkdownHeadings(before).filter((heading) => {
+    const preserved = afterHeadings.some(
+      (candidate) =>
+        candidate.level === heading.level && candidate.title === heading.title,
+    );
+    return !preserved && afterLines.has(heading.title);
+  });
 }
 
 /**
@@ -436,7 +477,12 @@ export function createEditCurrentNoteTool(
           content: {
             type: "string",
             description:
-              "The full note body as plain text or Markdown. Use this OR patches, not both. Required for mode 'create'.",
+              "The full note body as plain text or Markdown. In edit mode this replaces the entire note, so include all unchanged Markdown heading markers. Use this OR patches, not both. Required for mode 'create'.",
+          },
+          allowHeadingChanges: {
+            type: "boolean",
+            description:
+              "For mode 'edit' only: set true only when the user explicitly asked to add, remove, or change heading levels. Otherwise accidental heading demotion is rejected.",
           },
           patches: {
             type: "array",
@@ -490,7 +536,7 @@ export function createEditCurrentNoteTool(
       matches: () => true,
       instruction:
         "When a Zotero note is already open/current and the user asks to edit, rewrite, revise, polish, or update that note, call `edit_current_note` with mode 'edit'. NEVER output note text directly in chat. " +
-        "For edits, PREFER `patches` (find-and-replace pairs) over `content` (full rewrite). " +
+        "For edits, PREFER `patches` (find-and-replace pairs) over `content` (full rewrite). Full rewrite content replaces the entire note, so preserve every unchanged Markdown heading marker exactly. Set `allowHeadingChanges` only when the user explicitly requests heading restructuring. " +
         "When the user asks to append/add content to an existing note, call `edit_current_note` with mode 'append' and `content`; pass `targetNoteId` when the destination note is known. " +
         "When the user asks to create/write/save a new item note, call `edit_current_note` with mode 'create', target 'item', and `content`; create means a brand-new child note, not appending to the response-save note. " +
         "For standalone notes, call `edit_current_note` with mode 'create', target 'standalone', and `content`. " +
@@ -623,6 +669,10 @@ export function createEditCurrentNoteTool(
         collections:
           mode === "create"
             ? normalizePositiveIntArray(args.collections)
+            : undefined,
+        allowHeadingChanges:
+          mode === "edit" && args.allowHeadingChanges === true
+            ? true
             : undefined,
       } as EditCurrentNoteInput);
     },
@@ -768,6 +818,22 @@ export function createEditCurrentNoteTool(
       const diffAfter = input._isHtml
         ? normalizeNoteSourceText(input.content)
         : normalizedContent;
+
+      if (!input.allowHeadingChanges) {
+        const changedHeadings = findChangedOrDemotedHeadings(
+          snapshot.text,
+          diffAfter,
+        );
+        if (changedHeadings.length) {
+          const labels = changedHeadings
+            .slice(0, 5)
+            .map((heading) => `${"#".repeat(heading.level)} ${heading.title}`)
+            .join(", ");
+          throw new Error(
+            `The proposed edit would remove or change existing heading formatting (${labels}). Preserve the original Markdown heading markers, or set allowHeadingChanges only when the user explicitly requested heading restructuring.`,
+          );
+        }
+      }
 
       return {
         toolName: "edit_current_note",
