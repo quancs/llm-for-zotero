@@ -18,6 +18,7 @@ import {
   shouldDecorateInterleavedAgentTraceCitations,
   shouldSuppressAssistantResponseContextMenu,
 } from "../src/modules/contextPanel/chat";
+import { agentRunTraceCache } from "../src/modules/contextPanel/agentState";
 import {
   attachRenderedCodeBlockControls,
   attachRenderedCopyButtons,
@@ -1000,7 +1001,7 @@ describe("agentTrace render", function () {
     assert.equal(formatAgentActivityDuration(3_661_000), "1h 1m 1s");
   });
 
-  it("expands activity while streaming and collapses it when complete", function () {
+  it("keeps live activity expanded when the turn completes", function () {
     const events: AgentRunEventRecord[] = [
       {
         runId: "run-activity-collapse",
@@ -1050,7 +1051,7 @@ describe("agentTrace render", function () {
       message,
       events,
     }) as unknown as FakeElement;
-    assert.isFalse(
+    assert.isTrue(
       (
         completedTrace.findByClass("llm-agent-activity-details") as
           | (FakeElement & {
@@ -1187,7 +1188,7 @@ describe("agentTrace render", function () {
     );
   });
 
-  it("keeps interleaved trace activity open until the final answer is ready", function () {
+  it("keeps interleaved trace activity open through the final answer", function () {
     const message = {
       role: "assistant" as const,
       text: "",
@@ -1323,7 +1324,7 @@ describe("agentTrace render", function () {
           open?: boolean;
         })
       | null;
-    assert.isFalse(completedDetails?.open);
+    assert.isTrue(completedDetails?.open);
     assert.equal(
       completedTrace.findByClass("llm-agent-activity-summary")?.textContent,
       "Worked for 4m 19s",
@@ -1335,11 +1336,8 @@ describe("agentTrace render", function () {
           (text) =>
             text.includes("simple-paper-QA") || text.includes("final answer"),
         ),
-      [
-        "<p>I’m using the simple-paper-QA skill.</p>",
-        "<p>This is the final answer.</p>",
-      ],
-      "collapsing the container must not dismiss its trace",
+      ["<p>I’m using the simple-paper-QA skill.</p>"],
+      "the canonical final answer must not be repeated inside the activity trace",
     );
     assert.isFalse(suppressFinalAnswer);
     assert.isNotNull(
@@ -1414,6 +1412,100 @@ describe("agentTrace render", function () {
         ),
       ["I’m using the simple-paper-QA skill.", "This is the final answer."],
     );
+  });
+
+  it("keeps a native Codex trace addressable after the message is reconstructed", async function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+    const runId = message.agentRunId;
+    assert.match(runId || "", /^codex-native-\d+-[a-z0-9]+$/);
+
+    controller.appendItemStatus(
+      {
+        id: "command-1",
+        type: "command_execution",
+        command: "pwd",
+        exitCode: 0,
+      },
+      "completed",
+    );
+    await controller.finish("Done.");
+
+    // Sending the next prompt reconstructs stored Message objects. The pending
+    // field is intentionally transient, so the stable run ID and shared cache
+    // must be sufficient to recover the prior activity.
+    const reconstructedMessage = {
+      role: "assistant" as const,
+      text: "Done.",
+      timestamp: 2,
+      runMode: "agent" as const,
+      agentRunId: runId,
+    };
+    assert.isFalse("pendingAgentTraceEvents" in reconstructedMessage);
+    assert.deepEqual(
+      agentRunTraceCache
+        .get(reconstructedMessage.agentRunId || "")
+        ?.map((entry) => entry.payload.type),
+      ["codex_tool_activity", "final"],
+    );
+    agentRunTraceCache.delete(runId || "");
+  });
+
+  it("hides native Codex user-message lifecycle events and user text echoes", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+    const userItem = {
+      id: "user-message-1",
+      type: "user_message",
+      role: "user",
+      details: "你再试下",
+    };
+
+    controller.appendItemStatus(userItem, "started");
+    controller.appendItemStatus(userItem, "completed");
+    assert.deepEqual(message.pendingAgentTraceEvents || [], []);
+
+    const { items } = buildAgentTraceDisplayItems(
+      [
+        {
+          runId: "run-user-lifecycle",
+          seq: 1,
+          eventType: "status",
+          payload: { type: "status", text: "Codex usermessage started" },
+          createdAt: 1,
+        },
+        {
+          runId: "run-user-lifecycle",
+          seq: 2,
+          eventType: "status",
+          payload: { type: "status", text: "你再试下" },
+          createdAt: 2,
+        },
+      ],
+      { role: "user", text: "你再试下", timestamp: 1 },
+      message,
+    );
+    assert.deepEqual(items, []);
   });
 
   it("preserves known quote anchors before agent trace DOM decoration", function () {
@@ -2081,10 +2173,7 @@ describe("agentTrace render", function () {
       }),
     ];
 
-    assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
-      "Used Read Paper",
-    ]);
+    assert.deepEqual(getCodexTraceActionTexts(events), ["Used Read Paper"]);
   });
 
   it("renders one Codex MCP row when Zotero MCP server aliases differ", function () {
@@ -2129,10 +2218,7 @@ describe("agentTrace render", function () {
       }),
     ];
 
-    assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
-      "Used Read Paper",
-    ]);
+    assert.deepEqual(getCodexTraceActionTexts(events), ["Used Read Paper"]);
   });
 
   it("keeps distinct Codex tools that emit the same visible text", function () {
@@ -2158,7 +2244,6 @@ describe("agentTrace render", function () {
     ];
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
       "Completed",
       "Completed",
     ]);
@@ -2187,7 +2272,6 @@ describe("agentTrace render", function () {
     ];
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
       "Completed",
       "Completed",
     ]);
@@ -2214,10 +2298,7 @@ describe("agentTrace render", function () {
       }),
     ];
 
-    assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
-      "Completed",
-    ]);
+    assert.deepEqual(getCodexTraceActionTexts(events), ["Completed"]);
   });
 
   it("renders one Codex MCP row when duplicate arguments are serialized differently", function () {
@@ -2260,10 +2341,7 @@ describe("agentTrace render", function () {
       }),
     ];
 
-    assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
-      "Used Read Paper",
-    ]);
+    assert.deepEqual(getCodexTraceActionTexts(events), ["Used Read Paper"]);
   });
 
   it("renders one Codex MCP row when duplicate identity is label versus tool name", function () {
@@ -2297,10 +2375,7 @@ describe("agentTrace render", function () {
       }),
     ];
 
-    assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
-      "Used Read Paper",
-    ]);
+    assert.deepEqual(getCodexTraceActionTexts(events), ["Used Read Paper"]);
   });
 
   it("keeps repeated Codex tool activity outside the duplicate window", function () {
@@ -2339,7 +2414,6 @@ describe("agentTrace render", function () {
     ];
 
     assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
       "Used Read Paper",
       "Used Read Paper",
     ]);
@@ -2395,10 +2469,7 @@ describe("agentTrace render", function () {
       1,
     );
 
-    assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
-      "Used Read Paper",
-    ]);
+    assert.deepEqual(getCodexTraceActionTexts(events), ["Used Read Paper"]);
   });
 
   it("coalesces native and MCP activity when Zotero server names use different separators", function () {
@@ -2452,10 +2523,7 @@ describe("agentTrace render", function () {
       events.filter((entry) => entry.payload.type === "codex_tool_activity"),
       1,
     );
-    assert.deepEqual(getCodexTraceActionTexts(events), [
-      "Codex received the request",
-      "Used Read Paper",
-    ]);
+    assert.deepEqual(getCodexTraceActionTexts(events), ["Used Read Paper"]);
   });
 
   it("preserves artifacts when duplicate Codex tool activity rows are compacted", function () {
@@ -3656,8 +3724,8 @@ describe("agentTrace render", function () {
     assert.isFalse(chipLabels.some((label) => label.includes("...")));
   });
 
-  it("uses the shared Paper chip structure across agent providers", function () {
-    const providers = ["Claude Code", "Codex", "OpenAI", "Anthropic", "Gemini"];
+  it("uses the shared Paper chip structure across non-Codex agent providers", function () {
+    const providers = ["Claude Code", "OpenAI", "Anthropic", "Gemini"];
     const events: AgentRunEventRecord[] = [
       {
         runId: "run-provider-parity",
@@ -3884,20 +3952,14 @@ describe("agentTrace render", function () {
       modelProviderLabel: "Codex",
     });
 
-    assert.deepInclude(items[0], {
-      type: "message",
-      tone: "neutral",
-      text: "Request sent to Codex.",
-    });
-    assert.deepInclude(items[1], {
-      type: "action",
-      row: {
-        kind: "plan",
-        icon: "↳",
-        text: "Codex received the request",
-      },
-      chips: [],
-    });
+    assert.isFalse(
+      items.some(
+        (item) =>
+          (item.type === "message" && item.text === "Request sent to Codex.") ||
+          (item.type === "action" &&
+            item.row.text === "Codex received the request"),
+      ),
+    );
     assert.deepInclude(
       items.find((item) => item.type === "reasoning"),
       {
@@ -4666,7 +4728,7 @@ describe("agentTrace render", function () {
     assert.equal(finalIndex, -1);
     assert.isBelow(scratchIndex, toolIndex);
     assert.notInclude(messageTexts, "This paper is about working memory.");
-    assert.lengthOf(doneActions, 1);
+    assert.lengthOf(doneActions, 0);
   });
 
   it("keeps the response menu available for Codex interleaved final text", function () {

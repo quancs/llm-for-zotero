@@ -377,7 +377,12 @@ import {
   initAgentSubsystem,
 } from "../../agent/index";
 import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
-import { getAgentRunTrace } from "../../agent/store/traceStore";
+import {
+  appendAgentRunEvent,
+  createAgentRun,
+  finishAgentRun,
+  getAgentRunTrace,
+} from "../../agent/store/traceStore";
 import {
   applyHistoryCompression,
   scheduleLLMSummary,
@@ -389,6 +394,7 @@ import type {
   AgentEvent,
   AgentPendingAction,
   AgentRunEventRecord,
+  AgentRunStatus,
   AgentRuntimeRequest,
   AgentToolArtifact,
 } from "../../agent/types";
@@ -5881,6 +5887,16 @@ function isCodexNativeAgentMessageItem(
   );
 }
 
+function isCodexNativeUserMessageItem(
+  event: CodexNativeTraceItemEvent,
+): boolean {
+  const itemType = (event.type || "").replace(/[-_\s]+/g, "").toLowerCase();
+  const role = (event.role || "").replace(/[-_\s]+/g, "").toLowerCase();
+  return (
+    itemType === "usermessage" || (itemType === "message" && role === "user")
+  );
+}
+
 function isCodexNativeToolItem(event: CodexNativeTraceItemEvent): boolean {
   const itemType = (event.type || "").replace(/[-_\s]+/g, "").toLowerCase();
   return (
@@ -6071,10 +6087,15 @@ function getCodexNativeGeneratedImage(
 function createCodexNativeActivityTraceController(
   assistantMessage: Message,
   queueRefresh: () => void,
+  persistence?: {
+    conversationKey: number;
+    model?: string;
+  },
 ) {
+  const createdAt = Date.now();
   const runId =
     assistantMessage.agentRunId?.trim() ||
-    `codex-native-${Math.floor(assistantMessage.timestamp || Date.now())}`;
+    `codex-native-${createdAt}-${Math.random().toString(36).slice(2, 10)}`;
   const events: AgentRunEventRecord[] = [];
   const progressEventIndexes = new Map<string, number>();
   const toolEventIndexes = new Map<string, number>();
@@ -6082,6 +6103,13 @@ function createCodexNativeActivityTraceController(
   const activatedSkillIds = new Set<string>();
   const progressCoalescers = new Map<string, BlockStreamCoalescer>();
   let seq = 0;
+  let settleTask: Promise<void> | null = null;
+
+  // Native Codex turns used to leave their trace only on the transient message
+  // object. A subsequent send reloads stored messages, so keep a stable run ID
+  // on the message and mirror the live snapshot into the shared trace cache.
+  assistantMessage.agentRunId = runId;
+  agentRunTraceCache.set(runId, []);
 
   const createEvent = (payload: AgentEvent): AgentRunEventRecord => ({
     runId,
@@ -6092,14 +6120,49 @@ function createCodexNativeActivityTraceController(
   });
 
   const sync = () => {
-    assistantMessage.pendingAgentTraceEvents = events.length
+    const snapshot = events.length
       ? events.map((entry, index) => ({
           ...entry,
           seq: index + 1,
           payload: { ...entry.payload } as AgentEvent,
         }))
       : undefined;
+    assistantMessage.pendingAgentTraceEvents = snapshot;
+    agentRunTraceCache.set(runId, snapshot || []);
     queueRefresh();
+  };
+
+  const persistSnapshot = async (
+    status: AgentRunStatus,
+    finalText: string,
+  ): Promise<void> => {
+    const conversationKey = Math.floor(Number(persistence?.conversationKey));
+    if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
+    const snapshot = (assistantMessage.pendingAgentTraceEvents || []).map(
+      (entry, index) => ({
+        ...entry,
+        seq: index + 1,
+        payload: { ...entry.payload } as AgentEvent,
+      }),
+    );
+    try {
+      await createAgentRun({
+        runId,
+        conversationKey,
+        mode: "agent",
+        model: persistence?.model,
+        status: "running",
+        createdAt,
+      });
+      for (const entry of snapshot) {
+        await appendAgentRunEvent(runId, entry.seq, entry.payload);
+      }
+      await finishAgentRun(runId, status, finalText);
+    } catch (error) {
+      // The answer itself is already available in memory. Trace persistence is
+      // best-effort and must not turn a successful Codex response into an error.
+      ztoolkit.log("LLM: Failed to persist native Codex activity trace", error);
+    }
   };
 
   const upsertProgressText = (
@@ -6528,7 +6591,12 @@ function createCodexNativeActivityTraceController(
     event: CodexNativeTraceItemEvent,
     phase: "started" | "completed",
   ): void => {
-    if (isCodexNativeAgentMessageItem(event)) return;
+    if (
+      isCodexNativeAgentMessageItem(event) ||
+      isCodexNativeUserMessageItem(event)
+    ) {
+      return;
+    }
     flushAllProgressCoalescers("event");
     if (appendStructuredOperationStatus(event, phase)) {
       sync();
@@ -6664,7 +6732,11 @@ function createCodexNativeActivityTraceController(
     }
   };
 
-  const finish = (finalText: string): void => {
+  const finish = (
+    finalText: string,
+    status: AgentRunStatus = "completed",
+  ): Promise<void> => {
+    if (settleTask) return settleTask;
     flushAllProgressCoalescers("final");
     const alreadyFinal = events.some((entry) => entry.payload.type === "final");
     if (!alreadyFinal) {
@@ -6673,6 +6745,8 @@ function createCodexNativeActivityTraceController(
       events.push(createEvent({ type: "final", text: finalText }));
       sync();
     }
+    settleTask = persistSnapshot(status, finalText);
+    return settleTask;
   };
 
   return {
@@ -8337,7 +8411,10 @@ export async function retryLatestAssistantResponse(
       refreshAssistantMessageSafely(assistantMessage),
     );
     const codexActivityTrace = isCodexNativeTurn
-      ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
+      ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh, {
+          conversationKey,
+          model: effectiveRequestConfig.model,
+        })
       : null;
     noteExplicitCodexNativeSkillInvocations(
       codexActivityTrace,
@@ -8517,7 +8594,7 @@ export async function retryLatestAssistantResponse(
       citationPaperContexts: contextPlan.citationPaperContexts,
       conversationKey,
     });
-    codexActivityTrace?.finish(assistantMessage.text);
+    await codexActivityTrace?.finish(assistantMessage.text);
     assistantMessage.timestamp = Date.now();
     assistantMessage.modelName = effectiveRequestConfig.model;
     assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
@@ -11037,7 +11114,10 @@ export async function sendQuestion(
       refreshAssistantMessageSafely(assistantMessage),
     );
     const codexActivityTrace = isCodexNativeTurn
-      ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
+      ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh, {
+          conversationKey,
+          model: effectiveRequestConfig.model,
+        })
       : null;
     noteExplicitCodexNativeSkillInvocations(
       codexActivityTrace,
@@ -11209,7 +11289,7 @@ export async function sendQuestion(
       citationPaperContexts: contextPlan.citationPaperContexts,
       conversationKey,
     });
-    codexActivityTrace?.finish(assistantMessage.text);
+    await codexActivityTrace?.finish(assistantMessage.text);
     assistantMessage.runMode = isCodexNativeTurn
       ? "agent"
       : effectiveRuntimeMode;

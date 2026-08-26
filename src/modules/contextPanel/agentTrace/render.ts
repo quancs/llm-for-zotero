@@ -175,7 +175,7 @@ function appendAgentActivityDisclosure(params: {
       ? { open: true, wasWorking: true }
       : previous
     : previous?.wasWorking
-      ? { open: false, wasWorking: false }
+      ? { open: previous.open, wasWorking: false }
       : previous || { open: false, wasWorking: false };
   agentActivityExpandedCache.set(message, state);
 
@@ -3312,6 +3312,20 @@ function isGenericAgentStatusText(text: string): boolean {
   );
 }
 
+function isRedundantCodexLifecycleStatus(
+  text: string,
+  userMessage: Message | null | undefined,
+): boolean {
+  const normalized = normalizeInlineTextForDedupe(text).toLowerCase();
+  if (/^codex user ?message (?:started|completed)$/.test(normalized)) {
+    return true;
+  }
+  const userText = normalizeInlineTextForDedupe(
+    userMessage?.text || "",
+  ).toLowerCase();
+  return Boolean(userText && normalized === userText);
+}
+
 function isHiddenClaudeStartupStatus(text: string): boolean {
   return (
     text === "Checking the request against the attached context." ||
@@ -3437,11 +3451,11 @@ function getFinalTraceText(events: AgentRunEventRecord[]): string {
   return "";
 }
 
-function shouldSuppressInlineFinalAnswer(
+function shouldSuppressDuplicateFinalAnswer(
   item: AgentTraceDisplayItem,
   finalText: string,
 ): boolean {
-  if (item.type !== "inline_text") return false;
+  if (item.type !== "inline_text" && item.type !== "message") return false;
   const finalKey = normalizeInlineTextForDedupe(finalText);
   const itemKey = normalizeInlineTextForDedupe(item.text);
   return Boolean(finalKey && itemKey && finalKey === itemKey);
@@ -3532,6 +3546,8 @@ function appendLegacyAgentTraceEvent(
       if (
         !statusText ||
         isGenericAgentStatusText(statusText) ||
+        (ctx.isCodexTrace &&
+          isRedundantCodexLifecycleStatus(statusText, ctx.userMessage)) ||
         statusText === ctx.lastMeaningfulStatus
       ) {
         return true;
@@ -3798,6 +3814,7 @@ function appendSharedAgentTraceEvent(
       return true;
     }
     case "final": {
+      if (ctx.isCodexTrace) return true;
       const alreadyCompleted = ctx.items.some(
         (item) => item.type === "action" && item.row.kind === "done",
       );
@@ -3868,27 +3885,25 @@ export function buildAgentTraceDisplayItems(
     visibleInlineText: new Set<string>(),
   };
 
-  items.push({
-    type: "message",
-    tone: "neutral",
-    text: isCodexTrace
-      ? "Request sent to Codex."
-      : buildInitialAgentMessage(requestChips),
-  });
-  items.push({
-    type: "action",
-    row: {
-      kind: "plan",
-      icon: "↳",
-      text: isCodexTrace
-        ? "Codex received the request"
-        : requestChips.length
+  if (!isCodexTrace) {
+    items.push({
+      type: "message",
+      tone: "neutral",
+      text: buildInitialAgentMessage(requestChips),
+    });
+    items.push({
+      type: "action",
+      row: {
+        kind: "plan",
+        icon: "↳",
+        text: requestChips.length
           ? "Request and attached context received"
           : "Request received",
-    },
-    chips: requestChips,
-    detailKey: "request",
-  });
+      },
+      chips: requestChips,
+      detailKey: "request",
+    });
+  }
 
   for (let index = 0; index < compactedEvents.length; index += 1) {
     const entry = compactedEvents[index];
@@ -3899,7 +3914,9 @@ export function buildAgentTraceDisplayItems(
 
   const finalText = getFinalTraceText(compactedEvents);
   const displayItems = finalText
-    ? items.filter((item) => !shouldSuppressInlineFinalAnswer(item, finalText))
+    ? items.filter(
+        (item) => !shouldSuppressDuplicateFinalAnswer(item, finalText),
+      )
     : items;
   const inlineTextReplacesAssistantText = isInterleaved && !finalText;
 
