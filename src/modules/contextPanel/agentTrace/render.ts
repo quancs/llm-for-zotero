@@ -56,6 +56,12 @@ type AgentTraceSummaryRow = {
   codeBlock?: string;
 };
 
+type CodexCommandActivityGroup = {
+  count: number;
+  runningCount: number;
+  failedCount: number;
+};
+
 const agentTraceActionExpandedCache = new Map<string, boolean>();
 const agentActivityExpandedCache = new WeakMap<
   Message,
@@ -75,6 +81,7 @@ type AgentTraceDisplayItem =
       chips?: AgentTraceChip[];
       details?: AgentTraceDetail[];
       detailKey?: string;
+      commandGroup?: CodexCommandActivityGroup;
     }
   | {
       type: "card_list";
@@ -3085,6 +3092,100 @@ function summarizeCodexToolActivity(input: {
   };
 }
 
+function isCodexCommandToolActivity(
+  toolName: string | undefined,
+  toolLabel: string | undefined,
+): boolean {
+  const normalizedName = normalizeMcpToolName(toolName || "")
+    .trim()
+    .toLowerCase();
+  if (["command", "exec_command", "run_command"].includes(normalizedName)) {
+    return true;
+  }
+  return !normalizedName && /^(?:run )?command$/i.test(toolLabel?.trim() || "");
+}
+
+function summarizeCodexCommandActivityGroup(
+  group: CodexCommandActivityGroup,
+): AgentTraceSummaryRow {
+  const plural = group.count === 1 ? "command" : "commands";
+  if (group.runningCount > 0) {
+    return {
+      kind: "tool",
+      icon: "⌘",
+      text:
+        group.count === 1
+          ? "Running command"
+          : `Running ${group.count} ${plural}`,
+    };
+  }
+  if (group.failedCount > 0) {
+    return {
+      kind: "skip",
+      icon: "!",
+      text:
+        group.count === 1
+          ? "Command failed"
+          : `Ran ${group.count} ${plural} (${group.failedCount} failed)`,
+    };
+  }
+  return {
+    kind: "tool",
+    icon: "⌘",
+    text: group.count === 1 ? "Ran command" : `Ran ${group.count} ${plural}`,
+  };
+}
+
+function numberCodexCommandActivityDetails(
+  details: AgentTraceDetail[],
+  ordinal: number,
+): AgentTraceDetail[] {
+  return details.map((detail) => ({
+    ...detail,
+    label: `${detail.label} ${ordinal}`,
+  }));
+}
+
+function appendCodexCommandActivity(
+  ctx: AgentTraceAdapterContext,
+  input: {
+    itemId: string;
+    phase: "started" | "completed";
+    ok?: boolean;
+    chips?: AgentTraceChip[];
+    details: AgentTraceDetail[];
+  },
+): void {
+  const previous = ctx.items[ctx.items.length - 1];
+  if (previous?.type === "action" && previous.commandGroup) {
+    const group = previous.commandGroup;
+    group.count += 1;
+    group.runningCount += input.phase === "started" ? 1 : 0;
+    group.failedCount +=
+      input.phase === "completed" && input.ok === false ? 1 : 0;
+    previous.row = summarizeCodexCommandActivityGroup(group);
+    previous.details = [
+      ...(previous.details || []),
+      ...numberCodexCommandActivityDetails(input.details, group.count),
+    ];
+    return;
+  }
+
+  const group: CodexCommandActivityGroup = {
+    count: 1,
+    runningCount: input.phase === "started" ? 1 : 0,
+    failedCount: input.phase === "completed" && input.ok === false ? 1 : 0,
+  };
+  ctx.items.push({
+    type: "action",
+    row: summarizeCodexCommandActivityGroup(group),
+    chips: input.chips,
+    details: numberCodexCommandActivityDetails(input.details, 1),
+    detailKey: `codex:commands:${input.itemId}`,
+    commandGroup: group,
+  });
+}
+
 function normalizeMcpToolName(value: string): string {
   const clean = value.trim();
   const match = clean.match(/^mcp__.+__(.+)$/);
@@ -3572,38 +3673,64 @@ function appendCodexAgentTraceEvent(
   switch (entry.payload.type) {
     case "codex_tool_activity": {
       const toolName = readAgentTraceText(entry.payload.toolName) || undefined;
+      const toolLabel =
+        readAgentTraceText(entry.payload.toolLabel) || undefined;
+      const commandActivity = isCodexCommandToolActivity(toolName, toolLabel);
+      const argsRecord = isAgentTraceRecord(entry.payload.args)
+        ? entry.payload.args
+        : null;
+      const codeBlock =
+        readAgentTraceText(entry.payload.codeBlock) ||
+        (commandActivity
+          ? readAgentTraceText(argsRecord?.command) || undefined
+          : undefined);
       const details = [
-        ...(entry.payload.codeBlock
-          ? [
-              normalizeAgentTraceDetail(
-                "Command",
-                entry.payload.codeBlock,
-                "code",
-              ),
-            ]
+        ...(codeBlock
+          ? [normalizeAgentTraceDetail("Command", codeBlock, "code")]
           : []),
         ...buildAgentTraceArgsDetails(toolName, entry.payload.args),
+        ...(commandActivity && entry.payload.ok === false && entry.payload.text
+          ? [normalizeAgentTraceDetail("Error", entry.payload.text, "code")]
+          : []),
       ].filter((detail): detail is AgentTraceDetail => Boolean(detail));
+      const chips = toolName
+        ? buildAgentTraceToolChips(
+            toolName,
+            entry.payload.args,
+            ctx.userMessage,
+          )
+        : undefined;
+      if (commandActivity) {
+        appendCodexCommandActivity(ctx, {
+          itemId: entry.payload.itemId,
+          phase: entry.payload.phase,
+          ok: entry.payload.ok,
+          chips,
+          details,
+        });
+        if (entry.payload.phase === "completed" && entry.payload.ok !== false) {
+          appendImageArtifactGrid(
+            ctx,
+            entry.payload.artifacts,
+            `codex:${entry.payload.itemId}`,
+          );
+        }
+        return true;
+      }
       ctx.items.push({
         type: "action",
         row: summarizeCodexToolActivity({
           phase: entry.payload.phase,
           toolName,
-          toolLabel: entry.payload.toolLabel,
+          toolLabel,
           serverName: entry.payload.serverName,
           args: entry.payload.args,
           ok: entry.payload.ok,
           text: entry.payload.text,
-          codeBlock: entry.payload.codeBlock,
+          codeBlock,
           artifacts: entry.payload.artifacts,
         }),
-        chips: toolName
-          ? buildAgentTraceToolChips(
-              toolName,
-              entry.payload.args,
-              ctx.userMessage,
-            )
-          : undefined,
+        chips,
         details,
         detailKey: `codex:${entry.payload.itemId}`,
       });

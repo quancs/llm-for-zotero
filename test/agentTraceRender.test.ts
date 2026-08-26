@@ -1989,8 +1989,47 @@ describe("agentTrace render", function () {
       .map((item) => item.row.text);
 
     assert.equal(
-      actionTexts.filter((text) => text === "Used Run Command").length,
+      actionTexts.filter((text) => text === "Ran command").length,
       1,
+    );
+  });
+
+  it("groups consecutive Codex shell commands into one expandable activity row", function () {
+    const commands = ["git status --short", "npm run typecheck", "git push"];
+    const events: AgentRunEventRecord[] = commands.map((command, index) => ({
+      runId: "run-command-group",
+      seq: index + 1,
+      eventType: "codex_tool_activity",
+      payload: {
+        type: "codex_tool_activity",
+        itemId: `command-${index + 1}`,
+        phase: "completed",
+        toolName: index === 1 ? "command" : "run_command",
+        toolLabel: index === 1 ? "Command" : "Run Command",
+        args: { command },
+        ok: true,
+      },
+      createdAt: index + 1,
+    }));
+
+    const { items } = buildAgentTraceDisplayItems(events, null, {
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      runMode: "agent",
+      modelProviderLabel: "Codex",
+    });
+    const commandGroups = items.filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action" && item.row.text === "Ran 3 commands",
+    );
+
+    assert.lengthOf(commandGroups, 1);
+    assert.deepEqual(
+      commandGroups[0].details
+        ?.filter((detail) => detail.label.startsWith("Command "))
+        .map((detail) => detail.value),
+      commands,
     );
   });
 
