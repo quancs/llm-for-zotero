@@ -46,11 +46,13 @@
   },
   "devDependencies": {
     "@types/chai": "^5.2.3",
+    "@types/jsdom": "^30.0.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^24.10.0",
     "@zotero-plugin/eslint-config": "^0.6.7",
     "chai": "^6.2.1",
     "eslint": "^9.39.2",
+    "jsdom": "^30.0.1",
     "mocha": "^11.7.5",
     "prettier": "^3.7.4",
     "ts-node": "^10.9.2",
