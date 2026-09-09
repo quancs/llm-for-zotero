@@ -163,13 +163,11 @@ describe("tool guidance contracts", function () {
       "utf8",
     );
 
-    assert.include(shortcut, "Generate a Mermaid flowchart");
-    assert.include(shortcut, "Keep it compact and high-level");
-    assert.include(shortcut, "Avoid poster-style detail dumps");
-    assert.include(
-      shortcut,
-      "Do not invent structure unsupported by the paper",
-    );
+    assert.include(shortcut, "Mermaid 流程图");
+    assert.include(shortcut, "说明和节点标签使用中文");
+    assert.include(shortcut, "保持简洁，突出整体脉络");
+    assert.include(shortcut, "避免堆砌海报式的细节");
+    assert.include(shortcut, "不要编造论文中没有依据的结构");
     assert.notInclude(shortcut, "Generate a fenced SVG diagram");
   });
 
