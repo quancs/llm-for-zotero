@@ -36,6 +36,17 @@ export function copyRenderedMathSelectionToClipboard(
   return true;
 }
 
+function closestElement(node: Node | null): Element | null {
+  if (!node) return null;
+  return node.nodeType === 1 ? (node as Element) : node.parentElement || null;
+}
+
+export function isSelectionInsideReasoningPanel(selection: Selection): boolean {
+  return [selection.anchorNode, selection.focusNode].some((node) =>
+    Boolean(closestElement(node)?.closest(".llm-agent-reasoning")),
+  );
+}
+
 export function attachAssistantSelectionPopup(
   deps: AssistantSelectionPopupDeps,
 ): void {
@@ -94,6 +105,7 @@ export function attachAssistantSelectionPopup(
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
       return null;
     }
+    if (isSelectionInsideReasoningPanel(selection)) return null;
     const anchorEl = isElementNode(selection.anchorNode)
       ? selection.anchorNode
       : selection.anchorNode?.parentElement || null;
@@ -119,7 +131,8 @@ export function attachAssistantSelectionPopup(
       return;
     }
     const targetBubble = bubble || findAssistantBubbleFromSelection();
-    if (targetBubble?.closest(".llm-agent-reasoning")) {
+    const activeSelection = panelWin.getSelection?.();
+    if (activeSelection && isSelectionInsideReasoningPanel(activeSelection)) {
       hideSelectionPopup();
       return;
     }
@@ -298,7 +311,7 @@ export function attachAssistantSelectionPopup(
   const onChatContextMenu = () => hideSelectionPopup();
   const onAssistantSelectionCopy = (e: Event) => {
     const targetBubble = findAssistantBubbleFromSelection();
-    if (!targetBubble || targetBubble.closest(".llm-agent-reasoning")) return;
+    if (!targetBubble) return;
     const payload = getRenderedMathSelectionClipboardPayload(
       panelDoc,
       targetBubble,

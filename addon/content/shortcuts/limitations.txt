@@ -1,1 +1,1 @@
-Explain the limitations and potential weaknesses.
+请用中文说明这篇论文的局限性和潜在不足。

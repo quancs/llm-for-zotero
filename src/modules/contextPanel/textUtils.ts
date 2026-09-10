@@ -569,6 +569,127 @@ function closestKatexElement(node: Node | null): Element | null {
   return element?.closest(".katex") || null;
 }
 
+type PlainTextToken =
+  | { type: "text"; value: string }
+  | { type: "break"; count: number };
+
+const PARAGRAPH_BOUNDARY_ELEMENTS = new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "DETAILS",
+  "DIALOG",
+  "DIV",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "MAIN",
+  "NAV",
+  "P",
+  "PRE",
+  "SECTION",
+  "TABLE",
+]);
+
+const LINE_BOUNDARY_ELEMENTS = new Set([
+  "DD",
+  "DL",
+  "DT",
+  "LI",
+  "OL",
+  "TBODY",
+  "TFOOT",
+  "THEAD",
+  "TR",
+  "UL",
+]);
+
+/**
+ * Serialize a cloned selection using the structural boundaries that
+ * textContent omits. The result intentionally approximates native selection
+ * text without depending on layout/innerText, which is unreliable for a
+ * detached fragment in Gecko.
+ */
+function serializeSelectionPlainText(container: HTMLElement): string {
+  const tokens: PlainTextToken[] = [];
+
+  const appendText = (value: string) => {
+    if (value) tokens.push({ type: "text", value });
+  };
+  const ensureBreak = (count: number) => {
+    const last = tokens[tokens.length - 1];
+    if (last?.type === "break") {
+      last.count = Math.max(last.count, count);
+    } else {
+      tokens.push({ type: "break", count });
+    }
+  };
+  const appendHardBreak = () => {
+    const last = tokens[tokens.length - 1];
+    if (last?.type === "break") {
+      last.count += 1;
+    } else {
+      tokens.push({ type: "break", count: 1 });
+    }
+  };
+
+  const visit = (node: Node) => {
+    if (node.nodeType === 3) {
+      appendText(node.textContent || "");
+      return;
+    }
+    if (node.nodeType !== 1) {
+      for (const child of Array.from(node.childNodes)) {
+        if (child) visit(child);
+      }
+      return;
+    }
+
+    const element = node as Element;
+    const tagName = element.tagName.toUpperCase();
+    if (tagName === "BR") {
+      appendHardBreak();
+      return;
+    }
+
+    const boundary = PARAGRAPH_BOUNDARY_ELEMENTS.has(tagName)
+      ? 2
+      : LINE_BOUNDARY_ELEMENTS.has(tagName)
+        ? 1
+        : 0;
+    if (boundary) ensureBreak(boundary);
+    for (const child of Array.from(node.childNodes)) {
+      if (child) visit(child);
+    }
+
+    if ((tagName === "TD" || tagName === "TH") && element.nextElementSibling) {
+      appendText("\t");
+    }
+    if (boundary) ensureBreak(boundary);
+  };
+
+  for (const child of Array.from(container.childNodes)) {
+    if (child) visit(child);
+  }
+  while (tokens[0]?.type === "break") tokens.shift();
+  while (tokens[tokens.length - 1]?.type === "break") tokens.pop();
+  return sanitizeText(
+    tokens
+      .map((token) =>
+        token.type === "text" ? token.value : "\n".repeat(token.count),
+      )
+      .join(""),
+  );
+}
+
 /**
  * Build the two clipboard representations used by KaTeX's copy-tex
  * extension, scoped to an assistant bubble instead of the global document.
@@ -614,7 +735,7 @@ export function getRenderedMathSelectionClipboardPayload(
     const temp = doc.createElement("div");
     temp.appendChild(fragment);
     replaceRenderedMathWithLatex(doc, temp);
-    const plainText = sanitizeText(temp.textContent || "");
+    const plainText = serializeSelectionPlainText(temp);
     if (!plainText.trim()) return null;
     return { plainText, renderedHtml };
   } catch (err) {
